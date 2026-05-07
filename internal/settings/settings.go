@@ -15,6 +15,12 @@ type PinnedKind struct {
 	Group string `json:"group"`
 }
 
+// ResourceColumnSettings holds per-resource table column preferences.
+type ResourceColumnSettings struct {
+	Visible []string           `json:"visible"`
+	Widths  map[string]float64 `json:"widths,omitempty"`
+}
+
 // AuditConfig holds cluster audit preferences.
 type AuditConfig struct {
 	IgnoredNamespaces []string `json:"ignoredNamespaces"`
@@ -30,9 +36,10 @@ func DefaultAuditConfig() AuditConfig {
 
 // Settings holds user preferences persisted across restarts.
 type Settings struct {
-	Theme       string       `json:"theme,omitempty"`
-	PinnedKinds []PinnedKind `json:"pinnedKinds,omitempty"`
-	Audit       *AuditConfig `json:"audit,omitempty"`
+	Theme           string                            `json:"theme,omitempty"`
+	PinnedKinds     []PinnedKind                      `json:"pinnedKinds,omitempty"`
+	ResourceColumns map[string]ResourceColumnSettings `json:"resourceColumns,omitempty"`
+	Audit           *AuditConfig                      `json:"audit,omitempty"`
 }
 
 // mu serializes Load-mutate-Save cycles to prevent concurrent PUTs from

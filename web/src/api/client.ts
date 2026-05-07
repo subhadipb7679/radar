@@ -1113,22 +1113,22 @@ export interface TopNodeMetrics {
 }
 
 // Fetch bulk metrics for all pods (for CPU/Memory columns in resource table)
-export function useTopPodMetrics() {
+export function useTopPodMetrics(refreshIntervalMs: number = 30000) {
   return useQuery<TopPodMetrics[]>({
     queryKey: ['top-pod-metrics'],
     queryFn: () => fetchJSON('/metrics/top/pods'),
-    staleTime: 25000,
-    refetchInterval: 30000,
+    staleTime: Math.max(0, refreshIntervalMs - 1000),
+    refetchInterval: refreshIntervalMs,
   })
 }
 
 // Fetch bulk metrics for all nodes (for CPU/Memory columns in resource table)
-export function useTopNodeMetrics() {
+export function useTopNodeMetrics(refreshIntervalMs: number = 30000) {
   return useQuery<TopNodeMetrics[]>({
     queryKey: ['top-node-metrics'],
     queryFn: () => fetchJSON('/metrics/top/nodes'),
-    staleTime: 25000,
-    refetchInterval: 30000,
+    staleTime: Math.max(0, refreshIntervalMs - 1000),
+    refetchInterval: refreshIntervalMs,
   })
 }
 
@@ -1147,7 +1147,17 @@ export interface PrometheusStatus {
     port: number
     basePath?: string
   }
+  portForward?: {
+    connected: boolean
+    localPort?: number
+    address?: string
+    namespace?: string
+    serviceName?: string
+    contextName?: string
+    error?: string
+  }
   contextName?: string
+  autoPortForwardOnStart?: boolean
   error?: string
 }
 
@@ -1179,15 +1189,15 @@ export interface PrometheusResourceMetrics {
 }
 
 export type PrometheusMetricCategory = 'cpu' | 'memory' | 'network_rx' | 'network_tx' | 'filesystem'
-export type PrometheusTimeRange = '10m' | '30m' | '1h' | '3h' | '6h' | '12h' | '24h' | '48h' | '7d' | '14d'
+export type PrometheusTimeRange = '10m' | '30m' | '1h' | '3h' | '6h' | '12h' | '24h' | '48h' | '7d' | '14d' | '30d' | '60d' | '90d'
 
 // Check Prometheus availability
 export function usePrometheusStatus() {
   return useQuery<PrometheusStatus>({
     queryKey: ['prometheus-status'],
     queryFn: () => fetchJSON('/prometheus/status'),
-    staleTime: 30000,
-    refetchInterval: 60000,
+    staleTime: 2000,
+    refetchInterval: query => query.state.data?.connected ? 60000 : 2000,
   })
 }
 
@@ -1221,15 +1231,22 @@ export function usePrometheusResourceMetrics(
   category: PrometheusMetricCategory = 'cpu',
   range: PrometheusTimeRange = '1h',
   enabled = true,
+  customRange?: { start: number; end: number },
 ) {
   return useQuery<PrometheusResourceMetrics>({
-    queryKey: ['prometheus-resource-metrics', kind, namespace, name, category, range],
-    queryFn: () =>
-      fetchJSON(
+    queryKey: ['prometheus-resource-metrics', kind, namespace, name, category, range, customRange?.start, customRange?.end],
+    queryFn: () => {
+      const params = new URLSearchParams({ category, range })
+      if (customRange) {
+        params.set('start', String(Math.floor(customRange.start)))
+        params.set('end', String(Math.floor(customRange.end)))
+      }
+      return fetchJSON(
         namespace
-          ? `/prometheus/resources/${kind}/${namespace}/${name}?category=${category}&range=${range}`
-          : `/prometheus/resources/${kind}/${name}?category=${category}&range=${range}`,
-      ),
+          ? `/prometheus/resources/${kind}/${namespace}/${name}?${params.toString()}`
+          : `/prometheus/resources/${kind}/${name}?${params.toString()}`,
+      )
+    },
     enabled,
     staleTime: 30000,
     refetchInterval: 60000,
@@ -2223,6 +2240,7 @@ export function useArtifactHubChart(repoName: string, chartName: string, version
 
 interface GitOpsMutationConfig<TVariables> {
   getPath: (variables: TVariables) => string
+  getBody?: (variables: TVariables) => unknown
   errorMessage: string
   successMessage: string
   getInvalidateKeys: (variables: TVariables) => (string | undefined)[][]
@@ -2237,8 +2255,10 @@ function createGitOpsMutation<TVariables>(config: GitOpsMutationConfig<TVariable
     const queryClient = useQueryClient()
     return useMutation<GitOpsOperationResponse, Error, TVariables>({
       mutationFn: async (variables: TVariables): Promise<GitOpsOperationResponse> => {
+        const body = config.getBody?.(variables)
         const response = await apiFetch(`${getApiBase()}${config.getPath(variables)}`, {
           method: 'POST',
+          ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
         })
         if (!response.ok) {
           const error = await response.json().catch(() => ({ error: 'Unknown error' }))
@@ -2261,7 +2281,23 @@ function createGitOpsMutation<TVariables>(config: GitOpsMutationConfig<TVariable
 
 // Common variable types
 type FluxResourceVars = { kind: string; namespace: string; name: string }
-type ArgoAppVars = { namespace: string; name: string }
+export type ArgoSyncOptions = {
+  revision?: string
+  prune: boolean
+  dryRun: boolean
+  applyOnly: boolean
+  force: boolean
+  skipSchemaValidation: boolean
+  autoCreateNamespace: boolean
+  pruneLast: boolean
+  applyOutOfSyncOnly: boolean
+  respectIgnoreDifferences: boolean
+  serverSideApply: boolean
+  prunePropagationPolicy: 'foreground' | 'background' | 'orphan' | ''
+  replace: boolean
+}
+type ArgoAppVars = { namespace: string; name: string; contextName?: string }
+type ArgoSyncVars = ArgoAppVars & ArgoSyncOptions
 
 // Standard invalidation patterns
 const fluxInvalidateKeys = (v: FluxResourceVars) => [
@@ -2272,6 +2308,13 @@ const argoInvalidateKeys = (v: ArgoAppVars) => [
   ['resources', 'applications'],
   ['resource', 'applications', v.namespace, v.name],
 ]
+
+function argoContextQuery(v: ArgoAppVars) {
+  if (!v.contextName) return ''
+  const params = new URLSearchParams()
+  params.set('context', v.contextName)
+  return `?${params.toString()}`
+}
 
 // ============================================================================
 // FluxCD API hooks
@@ -2315,29 +2358,30 @@ export const useFluxSyncWithSource = createGitOpsMutation<FluxResourceVars>({
 // ArgoCD API hooks
 // ============================================================================
 
-export const useArgoSync = createGitOpsMutation<ArgoAppVars>({
-  getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/sync`,
+export const useArgoSync = createGitOpsMutation<ArgoSyncVars>({
+  getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/sync${argoContextQuery(v)}`,
+  getBody: ({ namespace: _namespace, name: _name, contextName: _contextName, ...options }) => options,
   errorMessage: 'Failed to trigger sync',
   successMessage: 'Sync initiated',
   getInvalidateKeys: argoInvalidateKeys,
 })
 
 export const useArgoTerminate = createGitOpsMutation<ArgoAppVars>({
-  getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/terminate`,
+  getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/terminate${argoContextQuery(v)}`,
   errorMessage: 'Failed to terminate sync',
   successMessage: 'Sync terminated',
   getInvalidateKeys: argoInvalidateKeys,
 })
 
 export const useArgoSuspend = createGitOpsMutation<ArgoAppVars>({
-  getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/suspend`,
+  getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/suspend${argoContextQuery(v)}`,
   errorMessage: 'Failed to suspend application',
   successMessage: 'Application suspended',
   getInvalidateKeys: argoInvalidateKeys,
 })
 
 export const useArgoResume = createGitOpsMutation<ArgoAppVars>({
-  getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/resume`,
+  getPath: (v) => `/argo/applications/${v.namespace}/${v.name}/resume${argoContextQuery(v)}`,
   errorMessage: 'Failed to resume application',
   successMessage: 'Application resumed',
   getInvalidateKeys: argoInvalidateKeys,
@@ -2348,9 +2392,12 @@ export function useArgoRefresh() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ namespace, name, hard = false }: { namespace: string; name: string; hard?: boolean }) => {
-      const params = hard ? '?type=hard' : ''
-      const response = await apiFetch(`${getApiBase()}/argo/applications/${namespace}/${name}/refresh${params}`, {
+    mutationFn: async ({ namespace, name, hard = false, contextName }: { namespace: string; name: string; hard?: boolean; contextName?: string }) => {
+      const params = new URLSearchParams()
+      if (hard) params.set('type', 'hard')
+      if (contextName) params.set('context', contextName)
+      const query = params.toString() ? `?${params.toString()}` : ''
+      const response = await apiFetch(`${getApiBase()}/argo/applications/${namespace}/${name}/refresh${query}`, {
         method: 'POST',
       })
       if (!response.ok) {

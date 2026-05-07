@@ -9,6 +9,7 @@ import { DebugOverlay } from './components/DebugOverlay'
 import { TopologyGraph, TopologyFilterSidebar, TopologyControls } from '@skyhook-io/k8s-ui'
 import { TimelineView } from './components/timeline/TimelineView'
 import { ResourcesView } from './components/resources/ResourcesView'
+import { ArgoCDView } from './components/argocd/ArgoCDView'
 import { serializeColumnFilters } from './components/resources/resource-utils'
 import { ResourceDetailDrawer } from './components/resources/ResourceDetailDrawer'
 import { WorkloadViewRoute } from './components/workload/WorkloadView'
@@ -46,6 +47,7 @@ import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNam
 import { SettingsDialog } from './components/settings/SettingsDialog'
 import type { TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
 import { kindToPlural, openExternal } from './utils/navigation'
+import { parseContextName } from './utils/context-name'
 import type { ContextSwitcherHandle } from './components/ContextSwitcher'
 
 // All possible node kinds (core + GitOps)
@@ -114,8 +116,18 @@ function apiResourceToNodeIdPrefix(apiResource: string): string {
   return prefixMap[apiResource] || apiResource.replace(/s$/, '')
 }
 
-// Extended MainView type that includes traffic and cost
-type ExtendedMainView = MainView | 'traffic' | 'cost' | 'workload' | 'audit'
+function ArgoIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="12" cy="12" r="2.2" fill="currentColor" />
+      <path d="M12 3v4.2M12 16.8V21M3 12h4.2M16.8 12H21M5.6 5.6l3 3M15.4 15.4l3 3M18.4 5.6l-3 3M8.6 15.4l-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+// Extended MainView type that includes traffic, cost, ArgoCD, and special routes.
+type ExtendedMainView = MainView | 'traffic' | 'cost' | 'argocd' | 'workload' | 'audit'
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
@@ -127,6 +139,7 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   if (path === 'helm') return 'helm'
   if (path === 'traffic') return 'traffic'
   if (path === 'cost') return 'cost'
+  if (path === 'argocd') return 'argocd'
   if (path === 'workload') return 'workload'
   if (path === 'audit') return 'audit'
   return 'home'
@@ -388,13 +401,14 @@ function AppInner() {
 
   // Context switching for command palette
   const switchContext = useSwitchContext()
+  const pendingCrossContextResourceRef = useRef<SelectedResource | null>(null)
 
   // Refs for dropdown components to trigger them via shortcuts
   const namespaceSelectorRef = useRef<NamespaceSelectorHandle>(null)
   const contextSwitcherRef = useRef<ContextSwitcherHandle>(null)
 
   // View switching keyboard shortcuts
-  const views: ExtendedMainView[] = ['home', 'topology', 'resources', 'timeline', 'helm', 'traffic', 'cost', 'audit']
+  const views: ExtendedMainView[] = ['home', 'topology', 'resources', 'timeline', 'helm', 'traffic', 'argocd', 'cost', 'audit']
   useRegisterShortcuts([
     ...views.map((view, i) => ({
       id: `view-${view}`,
@@ -493,13 +507,58 @@ function AppInner() {
   const { data: availableNamespaces, error: namespacesError } = useNamespaces()
 
   // Context switch state
-  const { isSwitching, targetContext, progressMessage, updateProgress, endSwitch } = useContextSwitch()
+  const { isSwitching, targetContext, progressMessage, startSwitch, updateProgress, endSwitch } = useContextSwitch()
 
   // Connection state (for graceful startup)
   const { connection, retry: retryConnection, isRetrying, updateFromSSE: updateConnectionFromSSE } = useConnection()
 
   // Query client for cache invalidation
   const queryClient = useQueryClient()
+
+  const openResourceInResourcesView = useCallback((resource: SelectedResource, options?: { replace?: boolean; clearNamespaces?: boolean }) => {
+    setSelectedResource(resource)
+    const newParams = new URLSearchParams(searchParams)
+    newParams.delete('kind')
+    newParams.delete('mode')
+    newParams.delete('group')
+    newParams.delete('resource')
+    if (options?.clearNamespaces) {
+      newParams.delete('namespaces')
+    }
+    if (resource.group) {
+      newParams.set('apiGroup', resource.group)
+    } else {
+      newParams.delete('apiGroup')
+    }
+    navigate(
+      { pathname: `/resources/${kindToPlural(resource.kind)}`, search: newParams.toString() },
+      { replace: options?.replace },
+    )
+  }, [navigate, searchParams])
+
+  const navigateToArgoDestinationResource = useCallback(async (resource: SelectedResource, options?: { contextName?: string }) => {
+    const contextName = options?.contextName
+    if (contextName && contextName !== connection.context) {
+      pendingCrossContextResourceRef.current = resource
+      setNamespaces([])
+      const parsed = parseContextName(contextName)
+      startSwitch(parsed)
+      try {
+        await switchContext.mutateAsync({ name: contextName })
+        if (pendingCrossContextResourceRef.current) {
+          pendingCrossContextResourceRef.current = null
+          openResourceInResourcesView(resource, { clearNamespaces: true })
+        }
+      } catch (error) {
+        pendingCrossContextResourceRef.current = null
+        endSwitch()
+        console.error('Failed to switch to ArgoCD destination context:', error)
+      }
+      return
+    }
+
+    openResourceInResourcesView(resource)
+  }, [connection.context, endSwitch, openResourceInResourcesView, startSwitch, switchContext])
 
   // SSE-driven cache invalidation for resource lists, counts, and detail views.
   // Uses a 3-second throttle window: first event starts the timer, all events within the
@@ -564,13 +623,20 @@ function AppInner() {
       }
 
       // Close any open drawers/overlays — old cluster's resources don't exist on the new one
+      const pendingCrossContextResource = pendingCrossContextResourceRef.current
+      pendingCrossContextResourceRef.current = null
       setSelectedResource(null)
       setDrawerExpanded(false)
       setSelectedHelmRelease(null)
 
-      // Reset URL to current view with no resource-specific params.
-      // Old cluster's selected pod/resource/kind don't exist on the new cluster.
-      navigate({ pathname: location.pathname, search: '' }, { replace: true })
+      if (pendingCrossContextResource) {
+        setNamespaces([])
+        openResourceInResourcesView(pendingCrossContextResource, { replace: true, clearNamespaces: true })
+      } else {
+        // Reset URL to current view with no resource-specific params.
+        // Old cluster's selected pod/resource/kind don't exist on the new cluster.
+        navigate({ pathname: location.pathname, search: '' }, { replace: true })
+      }
 
       // Auto-unpause so the new cluster's topology loads immediately
       setTopologyPaused(false)
@@ -835,56 +901,63 @@ function AppInner() {
         <div className="flex items-center gap-4 shrink-0">
           {navCustomization.brandSlot ?? <Logo />}
 
-          <div className="flex items-center gap-2">
-            {navCustomization.contextSlot ?? <ContextSwitcher ref={contextSwitcherRef} />}
-            {/* Connection status - next to cluster name */}
-            <div className="flex items-center gap-1.5 ml-1">
-              <Tooltip
-                content={
-                  !connected
-                    ? 'Disconnected'
-                    : crdDiscoveryStatus === 'discovering'
-                      ? 'Connected — discovering Custom Resources...'
-                      : 'Connected'
-                }
-                delay={100}
-                position="bottom"
-              >
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    !connected
-                      ? 'bg-red-500'
-                      : crdDiscoveryStatus === 'discovering'
-                        ? 'bg-amber-400 animate-pulse'
-                        : 'bg-green-500'
-                  }`}
-                />
-              </Tooltip>
-              {/* Inline label only for non-steady states where the user
-                  might need to act or wait. The healthy "Connected" case
-                  is the dot alone; the dot's tooltip discloses it. Keeping
-                  "Connected" text here would expand the left section and
-                  collide with the absolute-centered nav block at xl, which
-                  is the same breakpoint where nav labels appear. */}
-              {(!connected || crdDiscoveryStatus === 'discovering') && (
-                <span className="text-xs text-theme-text-tertiary hidden xl:inline">
-                  {!connected ? 'Disconnected' : 'Discovering Custom Resources...'}
-                </span>
-              )}
-              {!connected && (
-                <button
-                  onClick={reconnect}
-                  disabled={isReconnecting}
-                  className="p-1 text-theme-text-secondary hover:text-theme-text-primary disabled:opacity-50"
-                  title="Reconnect"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isReconnecting ? 'animate-spin' : ''}`} />
-                </button>
-              )}
+          {mainView === 'argocd' ? (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-orange-500/20 bg-orange-500/10 text-sm font-medium text-orange-600 dark:text-orange-400">
+              <ArgoIcon className="w-4 h-4" />
+              Global ArgoCD
             </div>
-            {/* Port forwards indicator — shown only when sessions exist */}
-            <PortForwardIndicator />
-          </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              {navCustomization.contextSlot ?? <ContextSwitcher ref={contextSwitcherRef} />}
+              {/* Connection status - next to cluster name */}
+              <div className="flex items-center gap-1.5 ml-1">
+                <Tooltip
+                  content={
+                    !connected
+                      ? 'Disconnected'
+                      : crdDiscoveryStatus === 'discovering'
+                        ? 'Connected — discovering Custom Resources...'
+                        : 'Connected'
+                  }
+                  delay={100}
+                  position="bottom"
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      !connected
+                        ? 'bg-red-500'
+                        : crdDiscoveryStatus === 'discovering'
+                          ? 'bg-amber-400 animate-pulse'
+                          : 'bg-green-500'
+                    }`}
+                  />
+                </Tooltip>
+                {/* Inline label only for non-steady states where the user
+                    might need to act or wait. The healthy "Connected" case
+                    is the dot alone; the dot's tooltip discloses it. Keeping
+                    "Connected" text here would expand the left section and
+                    collide with the absolute-centered nav block at xl, which
+                    is the same breakpoint where nav labels appear. */}
+                {(!connected || crdDiscoveryStatus === 'discovering') && (
+                  <span className="text-xs text-theme-text-tertiary hidden xl:inline">
+                    {!connected ? 'Disconnected' : 'Discovering Custom Resources...'}
+                  </span>
+                )}
+                {!connected && (
+                  <button
+                    onClick={reconnect}
+                    disabled={isReconnecting}
+                    className="p-1 text-theme-text-secondary hover:text-theme-text-primary disabled:opacity-50"
+                    title="Reconnect"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isReconnecting ? 'animate-spin' : ''}`} />
+                  </button>
+                )}
+              </div>
+              {/* Port forwards indicator — shown only when sessions exist */}
+              <PortForwardIndicator />
+            </div>
+          )}
         </div>
 
         {/* Center: View tabs — absolute centered on wide, flows after left section on narrow */}
@@ -896,6 +969,7 @@ function AppInner() {
             { view: 'timeline' as const, icon: Clock, label: 'Timeline' },
             { view: 'helm' as const, icon: Package, label: 'Helm' },
             { view: 'traffic' as const, icon: Activity, label: 'Traffic' },
+            { view: 'argocd' as const, icon: ArgoIcon, label: 'ArgoCD' },
             // Cost is intentionally hidden from the pill bar for now — the view still
             // exists and is reachable via /cost, the Home dashboard card, and the
             // command palette (⌘K). Remove this comment to restore it.
@@ -929,16 +1003,18 @@ function AppInner() {
 
         {/* Right: Controls */}
         <div className="flex items-center gap-3 shrink-0">
-          {/* Namespace selector with search */}
-          <NamespaceSelector
-            ref={namespaceSelectorRef}
-            value={namespaces}
-            onChange={setNamespaces}
-            namespaces={availableNamespaces}
-            namespacesError={namespacesError}
-            disabled={mainView === 'helm'}
-            disabledTooltip="Helm view always shows all namespaces"
-          />
+          {/* Namespace selector with search. ArgoCD is global and reads from the admin cluster, so namespace scope is not applicable. */}
+          {mainView !== 'argocd' && (
+            <NamespaceSelector
+              ref={namespaceSelectorRef}
+              value={namespaces}
+              onChange={setNamespaces}
+              namespaces={availableNamespaces}
+              namespacesError={namespacesError}
+              disabled={mainView === 'helm'}
+              disabledTooltip="Helm view always shows all namespaces"
+            />
+          )}
 
           {/* Command palette trigger */}
           <button
@@ -957,6 +1033,8 @@ function AppInner() {
               <GitHubStarButton />
             </div>
           )}
+
+          {!navCustomization.embedded && <UpdateNotification />}
 
           {/* Local terminal */}
           {capabilities.localTerminal && (
@@ -1278,6 +1356,14 @@ function AppInner() {
           <TrafficView namespaces={namespaces} />
         )}
 
+        {/* ArgoCD applications view */}
+        {mainView === 'argocd' && (
+          <ArgoCDView
+            namespaces={namespaces}
+            onNavigateToResource={navigateToArgoDestinationResource}
+          />
+        )}
+
         {/* Cost detail view */}
         {mainView === 'cost' && (
           <CostView onBack={() => setMainView('home')} />
@@ -1366,9 +1452,6 @@ function AppInner() {
 
       {/* Port Forward floating panel (indicator lives in header) */}
       <PortForwardPanel />
-
-      {/* Update notification — hidden in embedded mode (OSS download nudge). */}
-      {!navCustomization.embedded && <UpdateNotification />}
 
       {/* Bottom Dock for Terminal/Logs */}
       <BottomDock />

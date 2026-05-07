@@ -39,9 +39,9 @@ import (
 	prometheuspkg "github.com/skyhook-io/radar/internal/prometheus"
 	"github.com/skyhook-io/radar/internal/settings"
 	"github.com/skyhook-io/radar/internal/timeline"
-	topology "github.com/skyhook-io/radar/pkg/topology"
 	"github.com/skyhook-io/radar/internal/updater"
 	"github.com/skyhook-io/radar/internal/version"
+	topology "github.com/skyhook-io/radar/pkg/topology"
 )
 
 // Server is the Explorer HTTP server
@@ -324,6 +324,8 @@ func (s *Server) setupRoutes() {
 			r.Post("/argo/applications/{namespace}/{name}/terminate", s.handleArgoTerminate)
 			r.Post("/argo/applications/{namespace}/{name}/suspend", s.handleArgoSuspend)
 			r.Post("/argo/applications/{namespace}/{name}/resume", s.handleArgoResume)
+			r.Get("/argocd/resources", s.handleArgoCDAdminResources)
+			r.Get("/argocd/destination-pods", s.handleArgoCDDestinationPods)
 
 			// AI resource preview (minified output for MCP/debugging)
 			r.Get("/ai/resources/{kind}", s.handleAIListResources)
@@ -2787,6 +2789,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		// user_preferences. Audit stays because it's cluster-shared policy.
 		loaded.Theme = ""
 		loaded.PinnedKinds = nil
+		loaded.ResourceColumns = nil
 	}
 	s.writeJSON(w, loaded)
 }
@@ -2802,8 +2805,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// defense-in-depth check so a raw call that bypasses the intercept
 	// doesn't silently succeed and cause a cluster-shared settings.json
 	// to get mutated by one user.
-	if cloudMode() && (patch.Theme != "" || patch.PinnedKinds != nil) {
-		s.writeError(w, http.StatusBadRequest, "theme and pinnedKinds are managed by Radar Cloud; use /api/preferences instead")
+	if cloudMode() && (patch.Theme != "" || patch.PinnedKinds != nil || patch.ResourceColumns != nil) {
+		s.writeError(w, http.StatusBadRequest, "user preferences are managed by Radar Cloud; use /api/preferences instead")
 		return
 	}
 	result, err := settings.Update(func(current *settings.Settings) {
@@ -2812,6 +2815,14 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if patch.PinnedKinds != nil {
 			current.PinnedKinds = patch.PinnedKinds
+		}
+		if patch.ResourceColumns != nil {
+			if current.ResourceColumns == nil {
+				current.ResourceColumns = make(map[string]settings.ResourceColumnSettings)
+			}
+			for key, value := range patch.ResourceColumns {
+				current.ResourceColumns[key] = value
+			}
 		}
 	})
 	if err != nil {
@@ -2822,6 +2833,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if cloudMode() {
 		result.Theme = ""
 		result.PinnedKinds = nil
+		result.ResourceColumns = nil
 	}
 	s.writeJSON(w, result)
 }
