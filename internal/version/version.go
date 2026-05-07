@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	releasesURL = "https://releases.skyhook.io/radar/latest"
-	githubURL   = "https://api.github.com/repos/skyhook-io/radar/releases/latest"
+	releasesURL = "https://api.github.com/repos/subhadipb7679/radar/releases/latest"
+	githubURL   = "https://api.github.com/repos/subhadipb7679/radar/releases/latest"
 )
 
 var (
