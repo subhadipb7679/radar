@@ -7,20 +7,28 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/skyhook-io/radar/internal/config"
 	"github.com/skyhook-io/radar/internal/errorlog"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/portforward"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
 )
 
 // RegisterRoutes registers Prometheus metric routes on the given router.
 func RegisterRoutes(r chi.Router) {
 	r.Get("/prometheus/status", handleStatus)
 	r.Post("/prometheus/connect", handleConnect)
+	r.Post("/prometheus/portforward", handleStartPortForward)
+	r.Delete("/prometheus/portforward", handleStopPortForward)
 	r.Get("/prometheus/resources/{kind}/{namespace}/{name}", handleResourceMetrics)
 	r.Get("/prometheus/resources/{kind}/{name}", handleClusterScopedResourceMetrics)
 	r.Get("/prometheus/namespace/{namespace}", handleNamespaceMetrics)
@@ -47,7 +55,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Status{Available: false, Error: "Prometheus client not initialized"})
 		return
 	}
-	writeJSON(w, http.StatusOK, client.GetStatus())
+	writeJSON(w, http.StatusOK, statusWithStartupConfig(client))
 }
 
 // handleConnect triggers Prometheus discovery and connection.
@@ -77,11 +85,170 @@ func handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, client.GetStatus())
+	writeJSON(w, http.StatusOK, statusWithStartupConfig(client))
+}
+
+// handleStartPortForward starts a local tunnel to the conventional in-cluster
+// Prometheus service and points the Prometheus client at it.
+func handleStartPortForward(w http.ResponseWriter, r *http.Request) {
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Prometheus client not initialized")
+		return
+	}
+	info, err := StartFixedServicePortForward(r.Context())
+	if err != nil {
+		log.Printf("[prometheus] Port-forward to monitoring/prometheus-server failed: %v", err)
+		errorlog.Record("prometheus", "error", "port-forward to monitoring/prometheus-server failed: %v", err)
+		writeError(w, http.StatusBadGateway, "Prometheus port-forward failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      statusWithStartupConfig(client),
+		"portForward": info,
+	})
+}
+
+func StartFixedServicePortForward(ctx context.Context) (*portforward.ConnectionInfo, error) {
+	client := GetClient()
+	if client == nil {
+		return nil, fmt.Errorf("Prometheus client not initialized")
+	}
+	return client.startFixedServicePortForward(ctx, "monitoring", "prometheus-server")
+}
+
+func handleStopPortForward(w http.ResponseWriter, r *http.Request) {
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Prometheus client not initialized")
+		return
+	}
+
+	portforward.Stop()
+	client.ResetConnection()
+	writeJSON(w, http.StatusOK, statusWithStartupConfig(client))
+}
+
+func statusWithStartupConfig(client *Client) Status {
+	status := client.GetStatus()
+	status.AutoPortForwardOnStart = config.Load().PrometheusPortForwardOnStart
+	return status
+}
+
+func (c *Client) startFixedServicePortForward(ctx context.Context, namespace, serviceName string) (*portforward.ConnectionInfo, error) {
+	c.mu.RLock()
+	k8sClient := c.k8sClient
+	contextName := c.contextName
+	c.mu.RUnlock()
+
+	if k8sClient == nil {
+		return nil, fmt.Errorf("no Kubernetes client available")
+	}
+
+	svc, err := k8sClient.CoreV1().Services(namespace).Get(ctx, serviceName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get service: %w", err)
+	}
+
+	servicePort := selectPrometheusServicePort(*svc)
+	targetPort, err := resolveServiceTargetPort(ctx, k8sClient, *svc, servicePort)
+	if err != nil {
+		return nil, err
+	}
+
+	c.setDiscoveryService(&serviceInfo{
+		namespace:  namespace,
+		name:       serviceName,
+		port:       servicePort,
+		targetPort: targetPort,
+		basePath:   "",
+	})
+
+	info, err := portforward.Start(ctx, namespace, serviceName, targetPort, contextName)
+	if err != nil {
+		return nil, err
+	}
+
+	if !c.probe(ctx, info.Address) {
+		portforward.Stop()
+		c.ResetConnection()
+		return nil, fmt.Errorf("Prometheus at %s/%s not responding after port-forward", namespace, serviceName)
+	}
+	c.markConnected(info.Address, "")
+
+	return info, nil
+}
+
+func selectPrometheusServicePort(svc corev1.Service) int {
+	if len(svc.Spec.Ports) == 0 {
+		return 9090
+	}
+	for _, port := range svc.Spec.Ports {
+		if int(port.Port) == 9090 || port.Name == "http" || strings.Contains(port.Name, "prometheus") {
+			return int(port.Port)
+		}
+	}
+	return int(svc.Spec.Ports[0].Port)
+}
+
+func resolveServiceTargetPort(ctx context.Context, client kubernetes.Interface, svc corev1.Service, servicePort int) (int, error) {
+	for _, port := range svc.Spec.Ports {
+		if int(port.Port) != servicePort {
+			continue
+		}
+		switch port.TargetPort.Type {
+		case intstr.Int:
+			if port.TargetPort.IntVal > 0 {
+				return int(port.TargetPort.IntVal), nil
+			}
+			return servicePort, nil
+		case intstr.String:
+			resolved, err := resolveNamedServiceTargetPort(ctx, client, svc, port.TargetPort.StrVal)
+			if err != nil {
+				return 0, err
+			}
+			return resolved, nil
+		default:
+			return servicePort, nil
+		}
+	}
+	return 0, fmt.Errorf("service does not expose port %d", servicePort)
+}
+
+func resolveNamedServiceTargetPort(ctx context.Context, client kubernetes.Interface, svc corev1.Service, portName string) (int, error) {
+	if portName == "" {
+		return 0, fmt.Errorf("service targetPort name is empty")
+	}
+	if len(svc.Spec.Selector) == 0 {
+		return 0, fmt.Errorf("service has no selector to resolve targetPort %q", portName)
+	}
+
+	pods, err := client.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labels.Set(svc.Spec.Selector).String(),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list service pods: %w", err)
+	}
+
+	for _, pod := range pods.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		for _, container := range pod.Spec.Containers {
+			for _, port := range container.Ports {
+				if port.Name == portName {
+					return int(port.ContainerPort), nil
+				}
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("no running pod found with named port %q", portName)
 }
 
 // parseTimeRange parses the "range" query parameter into start/end/step.
-// Supported values: 10m, 30m, 1h, 3h, 6h, 12h, 24h, 48h, 7d, 14d (default: 1h).
+// Supported values: 10m, 30m, 1h, 3h, 6h, 12h, 24h, 48h, 7d, 14d, 30d, 60d, 90d (default: 1h).
 // The frontend UI exposes a subset of these; the full set is available via the API.
 func parseTimeRange(rangeStr string) (start, end time.Time, step time.Duration) {
 	end = time.Now()
@@ -118,6 +285,15 @@ func parseTimeRange(rangeStr string) (start, end time.Time, step time.Duration) 
 	case "14d":
 		duration = 14 * 24 * time.Hour
 		step = 2 * time.Hour
+	case "30d":
+		duration = 30 * 24 * time.Hour
+		step = 4 * time.Hour
+	case "60d":
+		duration = 60 * 24 * time.Hour
+		step = 8 * time.Hour
+	case "90d":
+		duration = 90 * 24 * time.Hour
+		step = 12 * time.Hour
 	default:
 		log.Printf("[prometheus] Unrecognized range %q, falling back to 1h", rangeStr)
 		rangeStr = "1h"
@@ -127,6 +303,67 @@ func parseTimeRange(rangeStr string) (start, end time.Time, step time.Duration) 
 
 	start = end.Add(-duration)
 	return
+}
+
+func parseRangeQuery(r *http.Request) (start, end time.Time, step time.Duration, rangeLabel string, ok bool) {
+	rangeLabel = r.URL.Query().Get("range")
+	startParam := r.URL.Query().Get("start")
+	endParam := r.URL.Query().Get("end")
+	if startParam == "" && endParam == "" {
+		start, end, step = parseTimeRange(rangeLabel)
+		return start, end, step, rangeLabel, true
+	}
+	if startParam == "" || endParam == "" {
+		return start, end, step, rangeLabel, false
+	}
+
+	startUnix, err := strconv.ParseFloat(startParam, 64)
+	if err != nil {
+		return start, end, step, rangeLabel, false
+	}
+	endUnix, err := strconv.ParseFloat(endParam, 64)
+	if err != nil {
+		return start, end, step, rangeLabel, false
+	}
+	start = time.Unix(int64(startUnix), 0)
+	end = time.Unix(int64(endUnix), 0)
+	if !end.After(start) {
+		return start, end, step, rangeLabel, false
+	}
+
+	duration := end.Sub(start)
+	step = stepForDuration(duration)
+	rangeLabel = "custom"
+	return start, end, step, rangeLabel, true
+}
+
+func stepForDuration(duration time.Duration) time.Duration {
+	switch {
+	case duration <= 15*time.Minute:
+		return 15 * time.Second
+	case duration <= time.Hour:
+		return time.Minute
+	case duration <= 3*time.Hour:
+		return 2 * time.Minute
+	case duration <= 6*time.Hour:
+		return 5 * time.Minute
+	case duration <= 12*time.Hour:
+		return 10 * time.Minute
+	case duration <= 24*time.Hour:
+		return 15 * time.Minute
+	case duration <= 48*time.Hour:
+		return 30 * time.Minute
+	case duration <= 7*24*time.Hour:
+		return time.Hour
+	case duration <= 14*24*time.Hour:
+		return 2 * time.Hour
+	case duration <= 30*24*time.Hour:
+		return 4 * time.Hour
+	case duration <= 60*24*time.Hour:
+		return 8 * time.Hour
+	default:
+		return 12 * time.Hour
+	}
 }
 
 // ResourceMetricsResponse is the response shape for resource metrics.
@@ -194,8 +431,11 @@ func handleResourceMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rangeStr := r.URL.Query().Get("range")
-	start, end, step := parseTimeRange(rangeStr)
+	start, end, step, rangeStr, ok := parseRangeQuery(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid time range")
+		return
+	}
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
@@ -271,8 +511,11 @@ func handleClusterScopedResourceMetrics(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	rangeStr := r.URL.Query().Get("range")
-	start, end, step := parseTimeRange(rangeStr)
+	start, end, step, rangeStr, ok := parseRangeQuery(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid time range")
+		return
+	}
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
@@ -327,8 +570,11 @@ func handleNamespaceMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rangeStr := r.URL.Query().Get("range")
-	start, end, step := parseTimeRange(rangeStr)
+	start, end, step, rangeStr, ok := parseRangeQuery(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid time range")
+		return
+	}
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
@@ -378,8 +624,11 @@ func handleClusterMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rangeStr := r.URL.Query().Get("range")
-	start, end, step := parseTimeRange(rangeStr)
+	start, end, step, rangeStr, ok := parseRangeQuery(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid time range")
+		return
+	}
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
@@ -430,8 +679,11 @@ func handleRawQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Default to range query
-	rangeStr := r.URL.Query().Get("range")
-	start, end, step := parseTimeRange(rangeStr)
+	start, end, step, _, ok := parseRangeQuery(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid time range")
+		return
+	}
 
 	result, err := client.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
@@ -443,7 +695,7 @@ func handleRawQuery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// retryWithoutContainerFilter re-runs the query without the container!='' filter
+// retryWithoutContainerFilter re-runs the query without the container!=” filter
 // when the primary result is empty and the category uses that filter. This handles
 // cri-docker and other setups where cAdvisor metrics lack the container label.
 // Returns the updated result (original or fallback) and the query that produced it.

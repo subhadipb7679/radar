@@ -16,6 +16,7 @@ interface Config {
   timelineDbPath?: string
   historyLimit?: number
   prometheusUrl?: string
+  prometheusPortForwardOnStart?: boolean
   mcp?: boolean | null
 }
 
@@ -322,6 +323,14 @@ function StartupConfigTab({
             onChange={(v) => onChange('prometheusUrl', v || undefined)}
           />
 
+          <ConfigToggle
+            label="Start Prometheus port-forward on launch"
+            help="Automatically port-forward monitoring/prometheus-server for the selected cluster after Radar connects."
+            value={config.prometheusPortForwardOnStart ?? false}
+            effectiveValue={effectiveConfig?.prometheusPortForwardOnStart ?? false}
+            onChange={(v) => onChange('prometheusPortForwardOnStart', v ? true : undefined)}
+          />
+
           <MCPSection
             mcpEnabled={config.mcp ?? true}
             onToggle={(v) => onChange('mcp', v)}
@@ -547,33 +556,48 @@ function ConfigNumberField({
 
 function ConfigToggle({
   label,
+  help,
   value,
+  effectiveValue,
   onChange,
 }: {
   label: string
+  help?: string
   value: boolean
+  effectiveValue?: boolean
   onChange: (value: boolean) => void
 }) {
   return (
-    <label className="flex items-center justify-between py-1 cursor-pointer group">
-      <span className="text-sm text-theme-text-primary group-hover:text-theme-text-primary">{label}</span>
-      <button
-        role="switch"
-        aria-checked={value}
-        onClick={() => onChange(!value)}
-        className={clsx(
-          'relative w-9 h-5 rounded-full transition-colors',
-          value ? 'bg-skyhook-600' : 'bg-theme-elevated border border-theme-border'
-        )}
-      >
-        <span
+    <div>
+      <label className="flex items-center justify-between py-1 cursor-pointer group">
+        <span>
+          <span className="block text-sm text-theme-text-primary group-hover:text-theme-text-primary">{label}</span>
+          {help && <span className="block text-xs text-theme-text-tertiary mt-0.5">{help}</span>}
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={value}
+          onClick={() => onChange(!value)}
           className={clsx(
-            'absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform shadow-sm',
-            value && 'translate-x-4'
+            'relative w-9 h-5 rounded-full transition-colors shrink-0 ml-3',
+            value ? 'bg-skyhook-600' : 'bg-theme-elevated border border-theme-border'
           )}
-        />
-      </button>
-    </label>
+        >
+          <span
+            className={clsx(
+              'absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform shadow-sm',
+              value && 'translate-x-4'
+            )}
+          />
+        </button>
+      </label>
+      {effectiveValue !== undefined && effectiveValue !== value && (
+        <p className="text-xs text-amber-600 dark:text-amber-400/80 mt-0.5">
+          Currently running: {effectiveValue ? 'enabled' : 'disabled'} (restart to apply)
+        </p>
+      )}
+    </div>
   )
 }
 

@@ -63,8 +63,21 @@ const TIME_RANGES: { value: PrometheusTimeRange; label: string }[] = [
   { value: '6h', label: '6h' },
   { value: '12h', label: '12h' },
   { value: '24h', label: '24h' },
+  { value: '48h', label: '2d' },
   { value: '7d', label: '7d' },
+  { value: '14d', label: '14d' },
+  { value: '30d', label: '30d' },
+  { value: '60d', label: '60d' },
+  { value: '90d', label: '90d' },
 ]
+
+type ChartTimeRange = PrometheusTimeRange | 'custom'
+
+function dateTimeLocalValue(timestampMs: number): string {
+  const date = new Date(timestampMs)
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000
+  return new Date(timestampMs - offsetMs).toISOString().slice(0, 16)
+}
 
 // ============================================================================
 // Main Component
@@ -84,15 +97,25 @@ export function PrometheusCharts({ kind, namespace, name, showEmptyState = false
 
   const categories = kind === 'Node' ? NODE_CATEGORIES : WORKLOAD_CATEGORIES
   const [activeCategory, setActiveCategory] = useState<PrometheusMetricCategory>('cpu')
-  const [timeRange, setTimeRange] = useState<PrometheusTimeRange>('1h')
+  const [timeRange, setTimeRange] = useState<ChartTimeRange>('1h')
+  const [customStart, setCustomStart] = useState(() => dateTimeLocalValue(Date.now() - 24 * 60 * 60 * 1000))
+  const [customEnd, setCustomEnd] = useState(() => dateTimeLocalValue(Date.now()))
 
   const isConnected = status?.connected === true
   const isSupported = SUPPORTED_KINDS.has(kind)
+  const customRange = useMemo(() => {
+    if (timeRange !== 'custom') return undefined
+    const start = Date.parse(customStart)
+    const end = Date.parse(customEnd)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined
+    return { start: start / 1000, end: end / 1000 }
+  }, [timeRange, customStart, customEnd])
 
   // Fetch metrics when connected
   const { data: metrics, isLoading: metricsLoading, error: metricsError } = usePrometheusResourceMetrics(
-    kind, namespace, name, activeCategory, timeRange,
-    isConnected && isSupported,
+    kind, namespace, name, activeCategory, timeRange === 'custom' ? '1h' : timeRange,
+    isConnected && isSupported && (timeRange !== 'custom' || Boolean(customRange)),
+    customRange,
   )
 
   if (!isSupported) {
@@ -117,26 +140,37 @@ export function PrometheusCharts({ kind, namespace, name, showEmptyState = false
   }
 
   if (!isConnected) {
+    const autoConnecting = status?.autoPortForwardOnStart === true
     return (
       <div className="flex flex-col items-center justify-center py-12 gap-4">
-        <WifiOff className="w-10 h-10 text-theme-text-quaternary" />
+        {autoConnecting ? (
+          <Loader2 className="w-10 h-10 text-theme-text-quaternary animate-spin" />
+        ) : (
+          <WifiOff className="w-10 h-10 text-theme-text-quaternary" />
+        )}
         <div className="text-center">
-          <p className="text-sm text-theme-text-secondary mb-1">Prometheus not connected</p>
-          <p className="text-xs text-theme-text-tertiary mb-4">
-            {status?.error || 'Connect to view historical CPU, memory, and network metrics'}
+          <p className="text-sm text-theme-text-secondary mb-1">
+            {autoConnecting ? 'Connecting to Prometheus...' : 'Prometheus not connected'}
           </p>
-          <button
-            onClick={() => connectMutation.mutate()}
-            disabled={connectMutation.isPending}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg btn-brand"
-          >
-            {connectMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Wifi className="w-4 h-4" />
-            )}
-            Discover Prometheus
-          </button>
+          <p className="text-xs text-theme-text-tertiary mb-4">
+            {autoConnecting
+              ? 'Startup port-forward is enabled. Metrics will appear automatically when the connection is ready.'
+              : status?.error || 'Connect to view historical CPU, memory, and network metrics'}
+          </p>
+          {!autoConnecting && (
+            <button
+              onClick={() => connectMutation.mutate()}
+              disabled={connectMutation.isPending}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg btn-brand"
+            >
+              {connectMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Wifi className="w-4 h-4" />
+              )}
+              Discover Prometheus
+            </button>
+          )}
         </div>
       </div>
     )
@@ -167,17 +201,47 @@ export function PrometheusCharts({ kind, namespace, name, showEmptyState = false
           ))}
         </div>
 
-        {/* Time range selector */}
-        <select
-          value={timeRange}
-          onChange={e => setTimeRange(e.target.value as PrometheusTimeRange)}
-          className="px-2 py-1 text-xs rounded-md bg-theme-elevated border border-theme-border text-theme-text-secondary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-        >
-          {TIME_RANGES.map(tr => (
-            <option key={tr.value} value={tr.value}>{tr.label}</option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          {/* Time range selector */}
+          <select
+            value={timeRange}
+            onChange={e => setTimeRange(e.target.value as ChartTimeRange)}
+            className="px-2 py-1 text-xs rounded-md bg-theme-elevated border border-theme-border text-theme-text-secondary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+          >
+            {TIME_RANGES.map(tr => (
+              <option key={tr.value} value={tr.value}>{tr.label}</option>
+            ))}
+            <option value="custom">Custom range...</option>
+          </select>
+        </div>
       </div>
+
+      {timeRange === 'custom' && (
+        <div className="px-4 py-2 border-b border-theme-border bg-theme-elevated/30 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-theme-text-tertiary font-medium">Custom range</span>
+          <label className="flex items-center gap-1.5 text-theme-text-secondary">
+            From
+            <input
+              type="datetime-local"
+              value={customStart}
+              onChange={event => setCustomStart(event.target.value)}
+              className="px-2 py-1 rounded-md bg-theme-surface border border-theme-border text-theme-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            />
+          </label>
+          <label className="flex items-center gap-1.5 text-theme-text-secondary">
+            To
+            <input
+              type="datetime-local"
+              value={customEnd}
+              onChange={event => setCustomEnd(event.target.value)}
+              className="px-2 py-1 rounded-md bg-theme-surface border border-theme-border text-theme-text-primary focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            />
+          </label>
+          {!customRange && (
+            <span className="text-red-500">Choose an end time after the start time.</span>
+          )}
+        </div>
+      )}
 
       {/* Chart area — fixed min-height prevents layout shift while loading */}
       <div className="min-h-[280px] p-4">
@@ -590,7 +654,7 @@ function AreaChart({ series, color, fillColor, unit }: {
         >
           <div className="bg-theme-surface border border-theme-border rounded-lg shadow-lg px-3 py-2 text-xs whitespace-nowrap">
             <div className="text-theme-text-tertiary mb-1.5 font-mono">
-              {new Date(hoverData.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              {formatTooltipTimestamp(hoverData.ts, maxTs - minTs)}
             </div>
             {hoverData.points.map((p, i) => (
               <div key={i} className="flex items-center gap-2 py-0.5">
@@ -676,6 +740,20 @@ function formatMetricValue(value: number, unit: string): string {
 function formatTimestamp(unix: number): string {
   const d = new Date(unix * 1000)
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatTooltipTimestamp(unix: number, spanSeconds: number): string {
+  const d = new Date(unix * 1000)
+  if (spanSeconds >= 24 * 60 * 60) {
+    return d.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+  }
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 // ============================================================================

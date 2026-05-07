@@ -43,6 +43,7 @@ func main() {
 	timelineStorage := flag.String("timeline-storage", fileCfg.TimelineStorageOr("memory"), "Timeline storage backend: memory or sqlite")
 	timelineDBPath := flag.String("timeline-db", fileCfg.TimelineDBPath, "Path to timeline database file (default: ~/.radar/timeline.db)")
 	prometheusURL := flag.String("prometheus-url", fileCfg.PrometheusURL, "Manual Prometheus/VictoriaMetrics URL (skips auto-discovery)")
+	prometheusPortForwardOnStart := flag.Bool("prometheus-port-forward-on-start", fileCfg.PrometheusPortForwardOnStart, "Start port-forward to monitoring/prometheus-server after connecting to the selected cluster")
 	flag.Parse()
 
 	if *showVersion {
@@ -79,22 +80,23 @@ func main() {
 	}
 
 	cfg := app.AppConfig{
-		Kubeconfig:       *kubeconfig,
-		KubeconfigDirs:   app.ParseKubeconfigDirs(*kubeconfigDir),
-		Namespace:        *namespace,
-		Port:             fileCfg.PortOr(0), // Configured port, or random to avoid conflicts with CLI
-		DevMode:          false,
-		HistoryLimit:     *historyLimit,
-		DebugEvents:      *debugEvents,
-		FakeInCluster:    *fakeInCluster,
-		DisableHelmWrite: *disableHelmWrite,
-		DisableExec:      *disableExec,
-		PodShellDefault:  *podShellDefault,
-		TimelineStorage:  *timelineStorage,
-		TimelineDBPath:   *timelineDBPath,
-		PrometheusURL:    *prometheusURL,
-		Version:          version,
-		MCPEnabled:       fileCfg.MCPEnabledOr(true),
+		Kubeconfig:                   *kubeconfig,
+		KubeconfigDirs:               app.ParseKubeconfigDirs(*kubeconfigDir),
+		Namespace:                    *namespace,
+		Port:                         fileCfg.PortOr(0), // Configured port, or random to avoid conflicts with CLI
+		DevMode:                      false,
+		HistoryLimit:                 *historyLimit,
+		DebugEvents:                  *debugEvents,
+		FakeInCluster:                *fakeInCluster,
+		DisableHelmWrite:             *disableHelmWrite,
+		DisableExec:                  *disableExec,
+		PodShellDefault:              *podShellDefault,
+		TimelineStorage:              *timelineStorage,
+		TimelineDBPath:               *timelineDBPath,
+		PrometheusURL:                *prometheusURL,
+		PrometheusPortForwardOnStart: *prometheusPortForwardOnStart,
+		Version:                      version,
+		MCPEnabled:                   fileCfg.MCPEnabledOr(true),
 	}
 
 	app.SetGlobals(cfg)

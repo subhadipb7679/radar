@@ -28,15 +28,16 @@ func TestSaveAndLoad(t *testing.T) {
 
 	mcp := true
 	want := Config{
-		Kubeconfig:      "/tmp/kubeconfig",
-		KubeconfigDirs:  []string{"/dir1", "/dir2"},
-		Namespace:       "prod",
-		Port:            9999,
-		NoBrowser:       true,
-		TimelineStorage: "sqlite",
-		HistoryLimit:    5000,
-		PrometheusURL:   "http://prom:9090",
-		MCP:             &mcp,
+		Kubeconfig:                   "/tmp/kubeconfig",
+		KubeconfigDirs:               []string{"/dir1", "/dir2"},
+		Namespace:                    "prod",
+		Port:                         9999,
+		NoBrowser:                    true,
+		TimelineStorage:              "sqlite",
+		HistoryLimit:                 5000,
+		PrometheusURL:                "http://prom:9090",
+		PrometheusPortForwardOnStart: true,
+		MCP:                          &mcp,
 	}
 
 	if err := Save(want); err != nil {
@@ -70,6 +71,9 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	if got.HistoryLimit != want.HistoryLimit {
 		t.Errorf("HistoryLimit = %d, want %d", got.HistoryLimit, want.HistoryLimit)
+	}
+	if got.PrometheusPortForwardOnStart != want.PrometheusPortForwardOnStart {
+		t.Errorf("PrometheusPortForwardOnStart = %v, want %v", got.PrometheusPortForwardOnStart, want.PrometheusPortForwardOnStart)
 	}
 	if got.MCP == nil || *got.MCP != true {
 		t.Errorf("MCP = %v, want true", got.MCP)

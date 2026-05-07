@@ -26,26 +26,29 @@ import (
 
 // AppConfig holds all parsed configuration for the Radar application.
 type AppConfig struct {
-	Kubeconfig       string
-	KubeconfigDirs   []string
-	Namespace        string
-	Port             int
-	NoBrowser        bool
-	DevMode          bool
-	HistoryLimit     int
-	DebugEvents      bool
-	FakeInCluster    bool
-	DisableHelmWrite bool
-	DisableExec          bool
-	DisableLocalTerminal bool
-	PodShellDefault      string
-	TimelineStorage      string
-	TimelineDBPath   string
-	PrometheusURL    string
-	Version          string
-	MCPEnabled       bool
-	AuthConfig       auth.Config
+	Kubeconfig                   string
+	KubeconfigDirs               []string
+	Namespace                    string
+	Port                         int
+	NoBrowser                    bool
+	DevMode                      bool
+	HistoryLimit                 int
+	DebugEvents                  bool
+	FakeInCluster                bool
+	DisableHelmWrite             bool
+	DisableExec                  bool
+	DisableLocalTerminal         bool
+	PodShellDefault              string
+	TimelineStorage              string
+	TimelineDBPath               string
+	PrometheusURL                string
+	PrometheusPortForwardOnStart bool
+	Version                      string
+	MCPEnabled                   bool
+	AuthConfig                   auth.Config
 }
+
+var startupConfig AppConfig
 
 // SetGlobals applies debug/test flags to global state.
 func SetGlobals(cfg AppConfig) {
@@ -112,6 +115,7 @@ func BuildTimelineStoreConfig(cfg AppConfig) timeline.StoreConfig {
 // functions used for both initial cluster initialization and context switching.
 // Must be called before InitializeCluster.
 func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
+	startupConfig = cfg
 	k8s.RegisterHelmFuncs(helm.ResetClient, helm.ReinitClient)
 
 	k8s.RegisterTimelineFuncs(timeline.ResetStore, func() error {
@@ -141,21 +145,26 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) {
 		}
 		return nil
 	})
+
+	k8s.OnContextSwitch(func(newContext string) {
+		startPrometheusForCluster(cfg, "context switch to "+newContext)
+	})
 }
 
 // CreateServer creates the HTTP server with the given configuration.
 func CreateServer(cfg AppConfig) *server.Server {
 	effectiveCfg := &config.Config{
-		Kubeconfig:      cfg.Kubeconfig,
-		KubeconfigDirs:  cfg.KubeconfigDirs,
-		Namespace:       cfg.Namespace,
-		Port:            cfg.Port,
-		NoBrowser:       cfg.NoBrowser,
-		TimelineStorage: cfg.TimelineStorage,
-		TimelineDBPath:  cfg.TimelineDBPath,
-		HistoryLimit:    cfg.HistoryLimit,
-		PrometheusURL:   cfg.PrometheusURL,
-		MCP:             &cfg.MCPEnabled,
+		Kubeconfig:                   cfg.Kubeconfig,
+		KubeconfigDirs:               cfg.KubeconfigDirs,
+		Namespace:                    cfg.Namespace,
+		Port:                         cfg.Port,
+		NoBrowser:                    cfg.NoBrowser,
+		TimelineStorage:              cfg.TimelineStorage,
+		TimelineDBPath:               cfg.TimelineDBPath,
+		HistoryLimit:                 cfg.HistoryLimit,
+		PrometheusURL:                cfg.PrometheusURL,
+		PrometheusPortForwardOnStart: cfg.PrometheusPortForwardOnStart,
+		MCP:                          &cfg.MCPEnabled,
 	}
 
 	serverCfg := server.Config{
@@ -304,19 +313,30 @@ func InitializeCluster() {
 		ClusterName: k8s.GetClusterName(),
 	})
 
-	// Auto-discover Prometheus in the background so charts are ready immediately
+	startPrometheusForCluster(startupConfig, "startup")
+}
+
+func startPrometheusForCluster(cfg AppConfig, reason string) {
 	go func() {
 		pt := time.Now()
-		promCtx, promCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		promCtx, promCancel := k8s.NewOperationContext(30 * time.Second)
 		defer promCancel()
 		client := prometheuspkg.GetClient()
 		if client == nil {
 			return
 		}
+		if cfg.PrometheusPortForwardOnStart {
+			if _, err := prometheuspkg.StartFixedServicePortForward(promCtx); err != nil {
+				log.Printf("[prometheus] Startup port-forward failed after %s (%v): %v", reason, time.Since(pt), err)
+			} else {
+				log.Printf("[prometheus] Startup port-forward ready after %s (%v)", reason, time.Since(pt))
+			}
+			return
+		}
 		if _, _, err := client.EnsureConnected(promCtx); err != nil {
-			log.Printf("[prometheus] Auto-discovery failed (%v): %v", time.Since(pt), err)
+			log.Printf("[prometheus] Auto-discovery failed after %s (%v): %v", reason, time.Since(pt), err)
 		} else {
-			log.Printf("[prometheus] Auto-discovery succeeded (%v)", time.Since(pt))
+			log.Printf("[prometheus] Auto-discovery succeeded after %s (%v)", reason, time.Since(pt))
 		}
 	}()
 }
