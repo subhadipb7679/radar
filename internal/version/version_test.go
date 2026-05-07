@@ -20,6 +20,8 @@ func TestIsNewerVersion(t *testing.T) {
 		{"prerelease newer than stable", "1.1.0-rc1", "1.0.0", true, false},
 		{"with v prefix on latest", "v1.1.0", "1.0.0", true, false},
 		{"with v prefix on current", "1.1.0", "v1.0.0", true, false},
+		{"team release newer than dirty build", "v1.5.10-team.3", "v1.5.10-team.2-dirty", true, false},
+		{"same dirty build as latest", "v1.5.10-team.3", "v1.5.10-team.3-dirty", false, false},
 		{"invalid latest", "not-a-version", "1.0.0", false, true},
 		{"invalid current", "1.0.0", "not-a-version", false, true},
 		{"empty latest", "", "1.0.0", false, true},

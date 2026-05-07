@@ -192,7 +192,7 @@ func fetchLatestRelease(ctx context.Context) *UpdateInfo {
 		return result
 	}
 
-	result.LatestVersion = strings.TrimPrefix(release.TagName, "v")
+	result.LatestVersion = normalizeVersion(release.TagName)
 	result.ReleaseURL = release.HTMLURL
 	result.ReleaseNotes = truncateNotes(release.Body, 500)
 
@@ -208,15 +208,22 @@ func fetchLatestRelease(ctx context.Context) *UpdateInfo {
 
 // isNewerVersion compares semver versions using Masterminds/semver
 func isNewerVersion(latest, current string) (bool, error) {
-	latestV, err := semver.NewVersion(latest)
+	latestV, err := semver.NewVersion(normalizeVersion(latest))
 	if err != nil {
 		return false, fmt.Errorf("failed to parse latest version %q: %w", latest, err)
 	}
-	currentV, err := semver.NewVersion(current)
+	currentV, err := semver.NewVersion(normalizeVersion(current))
 	if err != nil {
 		return false, fmt.Errorf("failed to parse current version %q: %w", current, err)
 	}
 	return latestV.GreaterThan(currentV), nil
+}
+
+func normalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "v")
+	v = strings.TrimSuffix(v, "-dirty")
+	return v
 }
 
 func truncateNotes(s string, maxLen int) string {
