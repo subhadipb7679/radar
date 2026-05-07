@@ -12,6 +12,7 @@ import {
   useMongoDocuments,
   useMongoIndexes,
   useMongoInstances,
+  useMongoSessions,
   useUpdateMongoDocument,
 } from '../../api/client'
 
@@ -42,6 +43,28 @@ function credentialLabel(ref?: MongoCredentialRef | null) {
   if (!ref) return 'Manual credentials'
   const key = ref.usernameKey ? `${ref.usernameKey}/${ref.passwordKey}` : ref.passwordKey
   return `${ref.namespace}/${ref.name}${key ? ` (${key})` : ''}`
+}
+
+interface MongoDataViewState {
+  selectedInstanceID: string
+  selectedCredentialKey: string
+  username: string
+  password: string
+  authSource: string
+  session: MongoSession | null
+  selectedDatabase: string
+  selectedCollection: string
+}
+
+let mongoDataViewState: MongoDataViewState = {
+  selectedInstanceID: '',
+  selectedCredentialKey: 'manual',
+  username: '',
+  password: '',
+  authSource: 'admin',
+  session: null,
+  selectedDatabase: '',
+  selectedCollection: '',
 }
 
 function InstanceCard({
@@ -375,16 +398,26 @@ function DocumentsPanel({
 
 export function MongoDataView() {
   const instances = useMongoInstances()
+  const activeSessions = useMongoSessions()
   const connect = useConnectMongo()
   const disconnect = useDisconnectMongo()
-  const [selectedInstanceID, setSelectedInstanceID] = useState<string>('')
-  const [selectedCredentialKey, setSelectedCredentialKey] = useState<string>('manual')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [authSource, setAuthSource] = useState('admin')
-  const [session, setSession] = useState<MongoSession | null>(null)
-  const [selectedDatabase, setSelectedDatabase] = useState('')
-  const [selectedCollection, setSelectedCollection] = useState('')
+  const [viewState, setViewState] = useState<MongoDataViewState>(() => mongoDataViewState)
+
+  const updateViewState = (patch: Partial<MongoDataViewState>) => {
+    mongoDataViewState = { ...mongoDataViewState, ...patch }
+    setViewState(mongoDataViewState)
+  }
+
+  const {
+    selectedInstanceID,
+    selectedCredentialKey,
+    username,
+    password,
+    authSource,
+    session,
+    selectedDatabase,
+    selectedCollection,
+  } = viewState
 
   const selectedInstance = useMemo(() => {
     return (instances.data ?? []).find(instance => instance.id === selectedInstanceID) ?? instances.data?.[0]
@@ -392,20 +425,40 @@ export function MongoDataView() {
 
   useEffect(() => {
     if (!selectedInstanceID && selectedInstance?.id) {
-      setSelectedInstanceID(selectedInstance.id)
+      updateViewState({ selectedInstanceID: selectedInstance.id })
     }
   }, [selectedInstance?.id, selectedInstanceID])
 
   useEffect(() => {
-    setSelectedCredentialKey(selectedInstance?.credentials?.[0] ? credentialKey(selectedInstance.credentials[0]) : 'manual')
-    setSelectedDatabase('')
-    setSelectedCollection('')
-  }, [selectedInstance?.id])
+    if (!selectedInstance) return
+    const credentialKeys = selectedInstance.credentials.map(credentialKey)
+    if (selectedCredentialKey !== 'manual' && !credentialKeys.includes(selectedCredentialKey)) {
+      updateViewState({
+        selectedCredentialKey: selectedInstance.credentials[0] ? credentialKey(selectedInstance.credentials[0]) : 'manual',
+      })
+    }
+  }, [selectedCredentialKey, selectedInstance])
+
+  useEffect(() => {
+    if (!activeSessions.data) return
+    if (session && activeSessions.data.some(active => active.id === session.id)) return
+
+    const restored = activeSessions.data.find(active => active.instanceId === selectedInstanceID) ?? activeSessions.data[0] ?? null
+    if (restored) {
+      updateViewState({
+        session: restored,
+        selectedInstanceID: restored.instanceId || selectedInstanceID,
+      })
+    } else if (session) {
+      updateViewState({ session: null })
+    }
+  }, [activeSessions.data, selectedInstanceID, session])
 
   const selectedCredential = useMemo(() => {
     if (!selectedInstance || selectedCredentialKey === 'manual') return null
     return selectedInstance.credentials.find(ref => credentialKey(ref) === selectedCredentialKey) ?? null
   }, [selectedCredentialKey, selectedInstance])
+  const missingManualCredentials = selectedCredentialKey === 'manual' && (!username.trim() || !password)
 
   const grouped = useMemo(() => {
     const groups = new Map<string, MongoInstance[]>()
@@ -418,6 +471,7 @@ export function MongoDataView() {
 
   const handleConnect = async () => {
     if (!selectedInstance) return
+    if (missingManualCredentials) return
     const next = await connect.mutateAsync({
       instanceId: selectedInstance.id,
       namespace: selectedInstance.namespace,
@@ -428,16 +482,21 @@ export function MongoDataView() {
       password: selectedCredential ? undefined : password,
       authSource,
     })
-    setSession(next)
-    setSelectedDatabase('')
-    setSelectedCollection('')
+    updateViewState({
+      session: next,
+      selectedInstanceID: next.instanceId || selectedInstance.id,
+      selectedDatabase: '',
+      selectedCollection: '',
+    })
   }
 
   const handleDisconnect = async () => {
     if (session) await disconnect.mutateAsync(session.id)
-    setSession(null)
-    setSelectedDatabase('')
-    setSelectedCollection('')
+    updateViewState({
+      session: null,
+      selectedDatabase: '',
+      selectedCollection: '',
+    })
   }
 
   return (
@@ -480,7 +539,12 @@ export function MongoDataView() {
                         key={instance.id}
                         instance={instance}
                         selected={selectedInstance?.id === instance.id}
-                        onSelect={() => setSelectedInstanceID(instance.id)}
+                        onSelect={() => updateViewState({
+                          selectedInstanceID: instance.id,
+                          selectedCredentialKey: instance.credentials[0] ? credentialKey(instance.credentials[0]) : 'manual',
+                          selectedDatabase: '',
+                          selectedCollection: '',
+                        })}
                       />
                     ))}
                   </div>
@@ -501,7 +565,7 @@ export function MongoDataView() {
               <>
                 <select
                   value={selectedCredentialKey}
-                  onChange={e => setSelectedCredentialKey(e.target.value)}
+                  onChange={e => updateViewState({ selectedCredentialKey: e.target.value })}
                   className="w-full rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm text-theme-text-primary"
                 >
                   {selectedInstance.credentials.map(ref => (
@@ -511,14 +575,19 @@ export function MongoDataView() {
                 </select>
                 {selectedCredentialKey === 'manual' && (
                   <div className="space-y-2">
-                    <input value={username} onChange={e => setUsername(e.target.value)} placeholder="Username" className="w-full rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm" />
-                    <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder="Password" className="w-full rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm" />
-                    <input value={authSource} onChange={e => setAuthSource(e.target.value)} placeholder="Auth source" className="w-full rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm" />
+                    <input value={username} onChange={e => updateViewState({ username: e.target.value })} placeholder="Username" className="w-full rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm" />
+                    <input value={password} onChange={e => updateViewState({ password: e.target.value })} type="password" placeholder="Password" className="w-full rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm" />
+                    <input value={authSource} onChange={e => updateViewState({ authSource: e.target.value })} placeholder="Auth source" className="w-full rounded-lg border border-theme-border bg-theme-base px-3 py-2 text-sm" />
+                    {missingManualCredentials && (
+                      <div className="text-xs text-amber-600 dark:text-amber-400">
+                        Enter both username and password, or select a discovered Kubernetes secret.
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="flex gap-2">
                   {!session ? (
-                    <button onClick={handleConnect} disabled={connect.isPending} className="btn-brand flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 text-sm disabled:opacity-50">
+                    <button onClick={handleConnect} disabled={connect.isPending || missingManualCredentials} className="btn-brand flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 text-sm disabled:opacity-50">
                       {connect.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cable className="w-4 h-4" />}
                       Connect
                     </button>
@@ -593,8 +662,8 @@ export function MongoDataView() {
           session={session}
           selectedDatabase={selectedDatabase}
           selectedCollection={selectedCollection}
-          onDatabase={(name) => { setSelectedDatabase(name); setSelectedCollection('') }}
-          onCollection={setSelectedCollection}
+          onDatabase={(name) => updateViewState({ selectedDatabase: name, selectedCollection: '' })}
+          onCollection={(name) => updateViewState({ selectedCollection: name })}
         />
 
         <DocumentsPanel session={session} database={selectedDatabase} collection={selectedCollection} />

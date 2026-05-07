@@ -309,7 +309,13 @@ func (s *Server) handleMongoConnect(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = mongoClient.Ping(connectCtx, readpref.Primary())
 	}
+	if err == nil {
+		_, err = mongoClient.ListDatabaseNames(connectCtx, bson.D{})
+	}
 	if err != nil {
+		if mongoClient != nil {
+			_ = mongoClient.Disconnect(context.Background())
+		}
 		cancelMongoPortForward(pfSession.ID)
 		s.writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to connect to MongoDB: %v", err))
 		return
@@ -333,6 +339,20 @@ func (s *Server) handleMongoConnect(w http.ResponseWriter, r *http.Request) {
 	mongoSessionStore.Unlock()
 
 	s.writeJSON(w, session)
+}
+
+func (s *Server) handleMongoSessions(w http.ResponseWriter, r *http.Request) {
+	mongoSessionStore.RLock()
+	defer mongoSessionStore.RUnlock()
+
+	sessions := make([]*MongoSession, 0, len(mongoSessionStore.sessions))
+	for _, session := range mongoSessionStore.sessions {
+		sessions = append(sessions, session)
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
+	})
+	s.writeJSON(w, sessions)
 }
 
 func (s *Server) handleMongoDisconnect(w http.ResponseWriter, r *http.Request) {

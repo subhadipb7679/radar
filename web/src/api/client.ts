@@ -216,9 +216,22 @@ export function useMongoInstances() {
   })
 }
 
+export function useMongoSessions() {
+  return useQuery<MongoSession[]>({
+    queryKey: ['data', 'mongodb', 'sessions'],
+    queryFn: () => fetchJSON('/data/mongodb/sessions'),
+    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
 export function useConnectMongo() {
+  const queryClient = useQueryClient()
   return useMutation<MongoSession, Error, MongoConnectRequest>({
     mutationFn: (request) => sendJSON('/data/mongodb/sessions', 'POST', request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['data', 'mongodb', 'sessions'] })
+    },
     meta: {
       errorMessage: 'Failed to connect to MongoDB',
       successMessage: 'Connected to MongoDB',

@@ -282,6 +282,7 @@ func (s *Server) setupRoutes() {
 
 			// Data explorers
 			r.Get("/data/mongodb/instances", s.handleMongoInstances)
+			r.Get("/data/mongodb/sessions", s.handleMongoSessions)
 			r.Post("/data/mongodb/sessions", s.handleMongoConnect)
 			r.Delete("/data/mongodb/sessions/{sessionID}", s.handleMongoDisconnect)
 			r.Get("/data/mongodb/sessions/{sessionID}/databases", s.handleMongoDatabases)
