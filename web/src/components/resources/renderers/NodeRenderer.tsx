@@ -1,6 +1,6 @@
 import { NodeRenderer as BaseNodeRenderer } from '@skyhook-io/k8s-ui/components/resources/renderers/NodeRenderer'
 import { useNavigate } from 'react-router-dom'
-import { useNodeMetrics, useNodeMetricsHistory, usePrometheusResourceMetrics, usePrometheusStatus } from '../../../api/client'
+import { useNodeMetrics, useNodeMetricsHistory } from '../../../api/client'
 import { serializeColumnFilters } from '../resource-utils'
 
 interface NodeRendererProps {
@@ -16,17 +16,6 @@ export function NodeRenderer({ data, relationships }: NodeRendererProps) {
   const { data: metrics } = useNodeMetrics(nodeName)
   const { data: metricsHistory } = useNodeMetricsHistory(nodeName)
 
-  // Determine whether to hide metrics-server section (Prometheus has data)
-  const { data: prometheusStatus } = usePrometheusStatus()
-  const prometheusConnected = prometheusStatus?.connected === true
-  const { data: prometheusCPU, isLoading: prometheusCPULoading, error: prometheusCPUError } = usePrometheusResourceMetrics(
-    'Node', '', nodeName ?? '', 'cpu', '1h', prometheusConnected,
-  )
-  const prometheusHasCPU = !prometheusCPUError && (prometheusCPU?.result?.series?.some(
-    s => s.dataPoints?.length > 0,
-  ) ?? false)
-  const hideMetricsServer = prometheusHasCPU || (prometheusConnected && prometheusCPULoading)
-
   return (
     <BaseNodeRenderer
       data={data}
@@ -38,7 +27,7 @@ export function NodeRenderer({ data, relationships }: NodeRendererProps) {
       } : undefined}
       metrics={metrics}
       metricsHistory={metricsHistory}
-      hideMetricsServer={hideMetricsServer}
+      hideMetricsServer={false}
     />
   )
 }

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, fetchJSON, isForbiddenError, useSecretCertExpiry, useTopPodMetrics, useTopNodeMetrics } from '../../api/client'
@@ -11,15 +11,25 @@ import {
   ResourcesView as BaseResourcesView,
   CORE_RESOURCES,
 } from '@skyhook-io/k8s-ui'
-import type { ResourceQueryResult } from '@skyhook-io/k8s-ui'
+import type { APIResource, ResourceQueryResult } from '@skyhook-io/k8s-ui'
 import type { SelectedResource } from '../../types'
 import { kindToPlural, type NavigateToResource } from '../../utils/navigation'
 import { CreateResourceDialog } from '../shared/CreateResourceDialog'
 import { getSkeletonYaml } from '../../utils/skeleton-yaml'
+import { KarpenterDashboard } from './KarpenterDashboard'
 
 interface ResourceCountsResponse {
   counts: Record<string, number>
   forbidden?: string[]
+}
+
+interface ResourceColumnSettings {
+  visible: string[]
+  widths: Record<string, number>
+}
+
+interface UserSettingsResponse {
+  resourceColumns?: Record<string, ResourceColumnSettings>
 }
 
 interface ResourcesViewProps {
@@ -30,12 +40,129 @@ interface ResourcesViewProps {
   onKindChange?: () => void
 }
 
+const RESOURCE_REFRESH_INTERVAL_STORAGE_KEY = 'radar.resourceRefreshIntervalMs'
+const RESOURCE_REFRESH_INTERVAL_OPTIONS = [
+  { value: 5000, label: '5s' },
+  { value: 10000, label: '10s' },
+  { value: 30000, label: '30s' },
+  { value: 60000, label: '1m' },
+  { value: 120000, label: '2m' },
+]
+const DEFAULT_RESOURCE_REFRESH_INTERVAL_MS = 5000
+const KARPENTER_DASHBOARD_RESOURCE: APIResource = {
+  group: 'karpenter.sh',
+  version: 'v1',
+  kind: 'Dashboard',
+  name: 'dashboard',
+  namespaced: false,
+  isCrd: true,
+  verbs: ['list'],
+}
+const TYPED_RESOURCE_NAMES = new Set([
+  'pods',
+  'services',
+  'deployments',
+  'daemonsets',
+  'statefulsets',
+  'replicasets',
+  'ingresses',
+  'configmaps',
+  'secrets',
+  'events',
+  'persistentvolumeclaims',
+  'pvcs',
+  'jobs',
+  'cronjobs',
+  'hpas',
+  'horizontalpodautoscalers',
+  'nodes',
+  'namespaces',
+  'persistentvolumes',
+  'pvs',
+  'storageclasses',
+  'sc',
+  'poddisruptionbudgets',
+  'pdbs',
+  'networkpolicies',
+  'netpol',
+])
+
+function getInitialResourceRefreshInterval(): number {
+  if (typeof window === 'undefined') return DEFAULT_RESOURCE_REFRESH_INTERVAL_MS
+
+  const stored = Number(window.localStorage.getItem(RESOURCE_REFRESH_INTERVAL_STORAGE_KEY))
+  return RESOURCE_REFRESH_INTERVAL_OPTIONS.some(option => option.value === stored)
+    ? stored
+    : DEFAULT_RESOURCE_REFRESH_INTERVAL_MS
+}
+
+function isKarpenterDashboardKind(kind: { name: string; kind: string; group: string } | null | undefined): boolean {
+  return kind?.group === KARPENTER_DASHBOARD_RESOURCE.group && kind?.name === KARPENTER_DASHBOARD_RESOURCE.name
+}
+
 export function ResourcesView({ namespaces, selectedResource, onResourceClick, onResourceClickYaml, onKindChange }: ResourcesViewProps) {
   const location = useLocation()
   const navigate = useNavigate()
+  const [resourceRefreshIntervalMs, setResourceRefreshIntervalMs] = useState(getInitialResourceRefreshInterval)
+
+  useEffect(() => {
+    window.localStorage.setItem(RESOURCE_REFRESH_INTERVAL_STORAGE_KEY, String(resourceRefreshIntervalMs))
+  }, [resourceRefreshIntervalMs])
 
   // API resources discovery
   const { data: apiResources } = useAPIResources()
+  const { data: persistedSettings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => fetchJSON<UserSettingsResponse>('/settings'),
+    staleTime: 60000,
+  })
+  const resourceColumnSettings = persistedSettings?.resourceColumns || {}
+  const lastResourceColumnSettingsWrites = useRef<Record<string, string>>({})
+
+  useEffect(() => {
+    if (persistedSettings?.resourceColumns) {
+      for (const [key, value] of Object.entries(persistedSettings.resourceColumns)) {
+        try {
+          window.localStorage.setItem(key, JSON.stringify(value))
+        } catch {
+          // Local cache is best effort; server settings are authoritative.
+        }
+      }
+    }
+  }, [persistedSettings?.resourceColumns])
+
+  const persistResourceColumnSettings = useCallback((key: string, settings: ResourceColumnSettings) => {
+    const serialized = JSON.stringify(settings)
+    if (lastResourceColumnSettingsWrites.current[key] === serialized) return
+    lastResourceColumnSettingsWrites.current[key] = serialized
+    try {
+      window.localStorage.setItem(key, JSON.stringify(settings))
+    } catch {
+      // Still try the durable backend settings write.
+    }
+    fetch(apiUrl('/settings'), {
+      method: 'PUT',
+      credentials: getCredentialsMode(),
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify({ resourceColumns: { [key]: settings } }),
+    }).then(response => {
+      if (!response.ok) console.warn('[settings] Failed to persist resource columns:', response.status)
+    }).catch(error => console.warn('[settings] Failed to persist resource columns:', error))
+  }, [])
+
+  const resourcesWithKarpenterDashboard = useMemo(() => {
+    if (!apiResources) return apiResources
+    const hasKarpenter = apiResources.some(resource =>
+      resource.group === 'karpenter.sh' || resource.group === 'karpenter.k8s.aws',
+    )
+    const hasDashboard = apiResources.some(resource =>
+      resource.group === KARPENTER_DASHBOARD_RESOURCE.group &&
+      resource.name === KARPENTER_DASHBOARD_RESOURCE.name &&
+      resource.kind === KARPENTER_DASHBOARD_RESOURCE.kind,
+    )
+    if (!hasKarpenter || hasDashboard) return apiResources
+    return [KARPENTER_DASHBOARD_RESOURCE, ...apiResources]
+  }, [apiResources])
 
   // Initialize navigation kind↔plural maps from discovered API resources
   useEffect(() => {
@@ -54,27 +181,26 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       if (namespaces.length > 0) params.set('namespaces', namespacesParam)
       return fetchJSON<ResourceCountsResponse>(`/resource-counts?${params}`)
     },
-    staleTime: 10000,
-    refetchInterval: 60000, // Safety net — SSE k8s_event drives near-real-time invalidation
+    staleTime: Math.max(0, resourceRefreshIntervalMs - 1000),
+    refetchInterval: resourceRefreshIntervalMs, // Safety net — SSE k8s_event drives near-real-time invalidation
   })
 
-  // Determine if selected kind is a CRD (only CRDs should send ?group= to backend)
-  const isSelectedCrd = useMemo(() => {
-    if (!selectedKind) return false
-    // Check API resources first, fall back to CORE_RESOURCES
+  const shouldSendGroup = useMemo(() => {
+    if (!selectedKind || isKarpenterDashboardKind(selectedKind)) return false
     const match = apiResources?.find(r => r.name === selectedKind.name && r.group === selectedKind.group)
       ?? CORE_RESOURCES.find(r => r.name === selectedKind.name && r.group === selectedKind.group)
-    return match?.isCrd ?? (!!selectedKind.group) // default: has group = likely CRD
+    return Boolean(selectedKind.group && (match?.isCrd || !TYPED_RESOURCE_NAMES.has(selectedKind.name)))
   }, [selectedKind, apiResources])
 
   // Fetch full data only for the selected kind
   const selectedKindQuery = useQuery({
-    queryKey: ['resources', selectedKind?.name, isSelectedCrd ? selectedKind?.group : '', namespaces],
+    queryKey: ['resources', selectedKind?.name, shouldSendGroup ? selectedKind?.group : '', namespaces],
     queryFn: async () => {
       if (!selectedKind) return []
+      if (isKarpenterDashboardKind(selectedKind)) return []
       const params = new URLSearchParams()
       if (namespaces.length > 0) params.set('namespaces', namespacesParam)
-      if (isSelectedCrd && selectedKind.group) params.set('group', selectedKind.group)
+      if (shouldSendGroup && selectedKind.group) params.set('group', selectedKind.group)
       const res = await fetch(apiUrl(`/resources/${selectedKind.name}?${params}`), {
         credentials: getCredentialsMode(),
         headers: getAuthHeaders(),
@@ -85,9 +211,9 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       }
       return res.json()
     },
-    enabled: !!selectedKind,
-    staleTime: 30000,
-    refetchInterval: 120000, // Safety net — SSE k8s_event drives near-real-time invalidation
+    enabled: !!selectedKind && !isKarpenterDashboardKind(selectedKind),
+    staleTime: Math.max(0, resourceRefreshIntervalMs - 1000),
+    refetchInterval: resourceRefreshIntervalMs, // Safety net — SSE k8s_event drives near-real-time invalidation
     retry: (failureCount: number, error: Error) => {
       if (isForbiddenError(error)) return false
       return failureCount < 3
@@ -98,8 +224,8 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   const selectedKindQueryResult: ResourceQueryResult | undefined = useMemo(() => {
     if (!selectedKind) return undefined
     return {
-      data: selectedKindQuery.data as any[] | undefined,
-      isLoading: selectedKindQuery.isLoading,
+      data: isKarpenterDashboardKind(selectedKind) ? [] : selectedKindQuery.data as any[] | undefined,
+      isLoading: isKarpenterDashboardKind(selectedKind) ? false : selectedKindQuery.isLoading,
       error: selectedKindQuery.error,
       refetch: selectedKindQuery.refetch,
       dataUpdatedAt: selectedKindQuery.dataUpdatedAt,
@@ -107,8 +233,8 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   }, [selectedKind, selectedKindQuery.data, selectedKindQuery.isLoading, selectedKindQuery.error, selectedKindQuery.refetch, selectedKindQuery.dataUpdatedAt])
 
   // Metrics
-  const { data: topPodMetrics } = useTopPodMetrics()
-  const { data: topNodeMetrics } = useTopNodeMetrics()
+  const { data: topPodMetrics } = useTopPodMetrics(resourceRefreshIntervalMs)
+  const { data: topNodeMetrics } = useTopNodeMetrics(resourceRefreshIntervalMs)
 
   // Certificate expiry
   const { data: certExpiry, isError: certExpiryError } = useSecretCertExpiry()
@@ -160,16 +286,18 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
   return (
     <>
     <BaseResourcesView
-      key={location.pathname}
       namespaces={namespaces}
       selectedResource={selectedResource}
       onResourceClick={onResourceClick}
       onResourceClickYaml={onResourceClickYaml}
       onKindChange={onKindChange}
       // Injected data
-      apiResources={apiResources}
+      apiResources={resourcesWithKarpenterDashboard}
       // Lightweight counts for sidebar (replaces 233 parallel queries)
-      resourceCounts={countsData?.counts}
+      resourceCounts={{
+        ...(countsData?.counts || {}),
+        'karpenter.sh/Dashboard': resourcesWithKarpenterDashboard?.some(resource => resource === KARPENTER_DASHBOARD_RESOURCE) ? 1 : 0,
+      }}
       resourceForbidden={countsData?.forbidden}
       selectedKindQuery={selectedKindQueryResult}
       onSelectedKindChange={setSelectedKind}
@@ -197,6 +325,12 @@ export function ResourcesView({ namespaces, selectedResource, onResourceClick, o
       onOpenWorkloadLogs={openWorkloadLogs}
       // Create resource
       onCreateResource={handleCreateResource}
+      refreshIntervalMs={resourceRefreshIntervalMs}
+      refreshIntervalOptions={RESOURCE_REFRESH_INTERVAL_OPTIONS}
+      onRefreshIntervalChange={setResourceRefreshIntervalMs}
+      renderCustomKindContent={(kind) => isKarpenterDashboardKind(kind) ? <KarpenterDashboard /> : null}
+      resourceColumnSettings={resourceColumnSettings}
+      onResourceColumnSettingsChange={persistResourceColumnSettings}
     />
     <CreateResourceDialog
       open={createDialogOpen}

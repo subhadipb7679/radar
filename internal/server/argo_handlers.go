@@ -1,37 +1,87 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/skyhook-io/radar/internal/k8s"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/dynamic"
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/pkg/gitops"
 )
+
+type argoSyncRequest struct {
+	Revision                 string `json:"revision"`
+	Prune                    bool   `json:"prune"`
+	DryRun                   bool   `json:"dryRun"`
+	ApplyOnly                bool   `json:"applyOnly"`
+	Force                    bool   `json:"force"`
+	SkipSchemaValidation     bool   `json:"skipSchemaValidation"`
+	AutoCreateNamespace      bool   `json:"autoCreateNamespace"`
+	PruneLast                bool   `json:"pruneLast"`
+	ApplyOutOfSyncOnly       bool   `json:"applyOutOfSyncOnly"`
+	RespectIgnoreDifferences bool   `json:"respectIgnoreDifferences"`
+	ServerSideApply          bool   `json:"serverSideApply"`
+	PrunePropagationPolicy   string `json:"prunePropagationPolicy"`
+	Replace                  bool   `json:"replace"`
+}
 
 // handleArgoSync triggers a sync operation on an ArgoCD Application
 func (s *Server) handleArgoSync(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
+	req := defaultArgoSyncRequest()
+	if r.Body != nil && r.ContentLength != 0 {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid sync options: %v", err))
+			return
+		}
+	}
+	if err := validateArgoSyncRequest(req); err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	auth.AuditLog(r, namespace, name)
-	client := s.getDynamicClientForRequest(r)
+	client := s.getArgoDynamicClientForRequest(r)
 	if client == nil {
 		log.Printf("[argo] Dynamic client unavailable for sync Application %s/%s", namespace, name)
 		s.writeError(w, http.StatusServiceUnavailable, "dynamic client not available")
 		return
 	}
-	result, err := gitops.SyncArgoApp(r.Context(), client, namespace, name)
+	result, err := gitops.SyncArgoApp(r.Context(), client, namespace, name, gitops.ArgoSyncOptions(req))
 	if err != nil {
 		s.writeGitOpsError(w, err, "argo", "sync", namespace, name)
 		return
 	}
 
 	s.writeJSON(w, toGitOpsResponse(result))
+}
+
+func defaultArgoSyncRequest() argoSyncRequest {
+	return argoSyncRequest{
+		Prune:                  true,
+		PruneLast:              true,
+		AutoCreateNamespace:    true,
+		PrunePropagationPolicy: "foreground",
+	}
+}
+
+func validateArgoSyncRequest(req argoSyncRequest) error {
+	switch req.PrunePropagationPolicy {
+	case "", "foreground", "background", "orphan":
+		return nil
+	default:
+		return fmt.Errorf("invalid prune propagation policy %q", req.PrunePropagationPolicy)
+	}
 }
 
 // handleArgoRefresh triggers a refresh (re-read from git) on an ArgoCD Application
@@ -48,7 +98,7 @@ func (s *Server) handleArgoRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	auth.AuditLog(r, namespace, name)
-	client := s.getDynamicClientForRequest(r)
+	client := s.getArgoDynamicClientForRequest(r)
 	if client == nil {
 		log.Printf("[argo] Dynamic client unavailable for refresh Application %s/%s", namespace, name)
 		s.writeError(w, http.StatusServiceUnavailable, "dynamic client not available")
@@ -70,7 +120,7 @@ func (s *Server) handleArgoTerminate(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	auth.AuditLog(r, namespace, name)
-	client := s.getDynamicClientForRequest(r)
+	client := s.getArgoDynamicClientForRequest(r)
 	if client == nil {
 		log.Printf("[argo] Dynamic client unavailable for terminate Application %s/%s", namespace, name)
 		s.writeError(w, http.StatusServiceUnavailable, "dynamic client not available")
@@ -92,7 +142,7 @@ func (s *Server) handleArgoSuspend(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	auth.AuditLog(r, namespace, name)
-	client := s.getDynamicClientForRequest(r)
+	client := s.getArgoDynamicClientForRequest(r)
 	if client == nil {
 		log.Printf("[argo] Dynamic client unavailable for suspend Application %s/%s", namespace, name)
 		s.writeError(w, http.StatusServiceUnavailable, "dynamic client not available")
@@ -114,7 +164,7 @@ func (s *Server) handleArgoResume(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	auth.AuditLog(r, namespace, name)
-	client := s.getDynamicClientForRequest(r)
+	client := s.getArgoDynamicClientForRequest(r)
 	if client == nil {
 		log.Printf("[argo] Dynamic client unavailable for resume Application %s/%s", namespace, name)
 		s.writeError(w, http.StatusServiceUnavailable, "dynamic client not available")
@@ -128,6 +178,30 @@ func (s *Server) handleArgoResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, toGitOpsResponse(result))
+}
+
+func (s *Server) getArgoDynamicClientForRequest(r *http.Request) dynamic.Interface {
+	contextName := strings.TrimSpace(r.URL.Query().Get("context"))
+	if contextName == "" {
+		return s.getDynamicClientForRequest(r)
+	}
+
+	if user := auth.UserFromContext(r.Context()); user != nil {
+		log.Printf("[argo] alternate-context action requested by authenticated user %s; impersonation for alternate contexts is not supported", user.Username)
+		return nil
+	}
+
+	cfg, err := k8s.BuildRESTConfigForContext(contextName)
+	if err != nil {
+		log.Printf("[argo] Failed to build dynamic client for context %q: %v", contextName, err)
+		return nil
+	}
+	client, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		log.Printf("[argo] Failed to create dynamic client for context %q: %v", contextName, err)
+		return nil
+	}
+	return client
 }
 
 // toGitOpsResponse converts a gitops.OperationResult to the REST response type.

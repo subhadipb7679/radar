@@ -680,6 +680,7 @@ func IsInCluster() bool {
 type ContextInfo struct {
 	Name      string `json:"name"`
 	Cluster   string `json:"cluster"`
+	Server    string `json:"server,omitempty"`
 	User      string `json:"user"`
 	Namespace string `json:"namespace"`
 	IsCurrent bool   `json:"isCurrent"`
@@ -755,6 +756,7 @@ func GetAvailableContexts() ([]ContextInfo, error) {
 			contexts = append(contexts, ContextInfo{
 				Name:      qName,
 				Cluster:   ctx.Cluster,
+				Server:    clusterServer(cfg, ctx.Cluster),
 				User:      ctx.AuthInfo,
 				Namespace: ctx.Namespace,
 				IsCurrent: qName == currentCtx,
@@ -783,12 +785,73 @@ func GetAvailableContexts() ([]ContextInfo, error) {
 		contexts = append(contexts, ContextInfo{
 			Name:      name,
 			Cluster:   ctx.Cluster,
+			Server:    clusterServer(&rawConfig, ctx.Cluster),
 			User:      ctx.AuthInfo,
 			Namespace: ctx.Namespace,
 			IsCurrent: name == currentCtx,
 		})
 	}
 	return contexts, nil
+}
+
+func clusterServer(cfg *clientcmdapi.Config, clusterName string) string {
+	if cfg == nil || clusterName == "" {
+		return ""
+	}
+	cluster := cfg.Clusters[clusterName]
+	if cluster == nil {
+		return ""
+	}
+	return cluster.Server
+}
+
+// BuildRESTConfigForContext builds a REST config for a kubeconfig context
+// without switching Radar's active cluster.
+func BuildRESTConfigForContext(name string) (*rest.Config, error) {
+	if IsInCluster() {
+		return nil, fmt.Errorf("cannot build alternate context config when running in-cluster")
+	}
+
+	clientMu.RLock()
+	registry := contextRegistry
+	singlePath := kubeconfigPath
+	clientMu.RUnlock()
+
+	var loadingRules *clientcmd.ClientConfigLoadingRules
+	var overrideContextName string
+
+	if registry != nil {
+		entry, ok := registry[name]
+		if !ok {
+			return nil, fmt.Errorf("context %q not found in kubeconfig", name)
+		}
+		loadingRules = &clientcmd.ClientConfigLoadingRules{ExplicitPath: entry.SourceFile}
+		overrideContextName = entry.InFileName
+	} else {
+		if singlePath == "" {
+			return nil, fmt.Errorf("kubeconfig path not set")
+		}
+		loadingRules = &clientcmd.ClientConfigLoadingRules{ExplicitPath: singlePath}
+		overrideContextName = name
+	}
+
+	configOverrides := &clientcmd.ConfigOverrides{CurrentContext: overrideContextName}
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+	rawConfig, err := kubeConfig.RawConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
+	}
+	if _, ok := rawConfig.Contexts[overrideContextName]; !ok {
+		return nil, fmt.Errorf("context %q not found in kubeconfig", name)
+	}
+
+	config, err := kubeConfig.ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build config for context %q: %w", name, err)
+	}
+	config.QPS = 50
+	config.Burst = 100
+	return config, nil
 }
 
 // SwitchContext switches the K8s client to use a different context

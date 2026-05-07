@@ -51,6 +51,49 @@ func (s *Server) handleResourceCounts(w http.ResponseWriter, r *http.Request) {
 	discovery := k8s.GetResourceDiscovery()
 	dynamicCache := k8s.GetDynamicResourceCache()
 	if discovery != nil && dynamicCache != nil {
+		for _, res := range []struct {
+			kind       string
+			group      string
+			namespaced bool
+		}{
+			{kind: "Role", group: "rbac.authorization.k8s.io", namespaced: true},
+			{kind: "ClusterRole", group: "rbac.authorization.k8s.io", namespaced: false},
+			{kind: "RoleBinding", group: "rbac.authorization.k8s.io", namespaced: true},
+			{kind: "ClusterRoleBinding", group: "rbac.authorization.k8s.io", namespaced: false},
+		} {
+			gvr, ok := discovery.GetGVRWithGroup(res.kind, res.group)
+			if !ok {
+				continue
+			}
+			key := res.group + "/" + res.kind
+			if res.namespaced && len(namespaces) > 0 {
+				total := 0
+				for _, ns := range namespaces {
+					items, err := dynamicCache.List(gvr, ns)
+					if err != nil {
+						log.Printf("[resource-counts] Failed to count %s in namespace %s: %v", key, ns, err)
+						forbidden = append(forbidden, key)
+						total = 0
+						break
+					}
+					total += len(items)
+				}
+				if total > 0 {
+					counts[key] = total
+				}
+				continue
+			}
+			items, err := dynamicCache.List(gvr, "")
+			if err != nil {
+				log.Printf("[resource-counts] Failed to count %s: %v", key, err)
+				forbidden = append(forbidden, key)
+				continue
+			}
+			if len(items) > 0 {
+				counts[key] = len(items)
+			}
+		}
+
 		resources, err := discovery.GetAPIResources()
 		if err != nil {
 			log.Printf("[resource-counts] Failed to discover API resources for CRD counts: %v", err)

@@ -71,8 +71,13 @@ const ALWAYS_SHOWN_KINDS = new Set([
   'Node',
   'Namespace',
   'ServiceAccount',
+  'Role',
+  'ClusterRole',
+  'RoleBinding',
+  'ClusterRoleBinding',
   'NetworkPolicy',
   'Event',
+  'Dashboard',
 ])
 
 // Fallback resource types when API resources aren't loaded yet
@@ -86,6 +91,11 @@ const CORE_RESOURCE_TYPES = [
   { kind: 'ingresses', label: 'Ingresses' },
   { kind: 'configmaps', label: 'ConfigMaps' },
   { kind: 'secrets', label: 'Secrets' },
+  { kind: 'serviceaccounts', label: 'ServiceAccounts' },
+  { kind: 'roles', label: 'Roles' },
+  { kind: 'clusterroles', label: 'ClusterRoles' },
+  { kind: 'rolebindings', label: 'RoleBindings' },
+  { kind: 'clusterrolebindings', label: 'ClusterRoleBindings' },
   { kind: 'jobs', label: 'Jobs' },
   { kind: 'cronjobs', label: 'CronJobs' },
   { kind: 'hpas', label: 'HPAs' },

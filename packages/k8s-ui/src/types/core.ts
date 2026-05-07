@@ -326,6 +326,7 @@ export interface ClusterInfo {
 export interface ContextInfo {
   name: string
   cluster: string
+  server?: string
   user: string
   namespace: string
   isCurrent: boolean

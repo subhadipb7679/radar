@@ -466,7 +466,7 @@ export function WorkloadView({
                 isSavingSecret={isUpdatingResource}
                 rendererOverrides={rendererOverrides}
                 resolvedEnvFrom={resolvedEnvFrom}
-                renderMetrics={renderMetricsTab}
+                showMetrics={false}
                 events={resourceFocusedK8sEvents}
                 eventsLoading={resourceFocusedEventsLoading}
                 updates={resourceFocusedUpdates}

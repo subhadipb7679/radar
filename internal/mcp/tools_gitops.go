@@ -7,8 +7,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/skyhook-io/radar/pkg/gitops"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/pkg/gitops"
 )
 
 // GitOps tool input types
@@ -39,7 +39,12 @@ func handleManageGitOps(ctx context.Context, req *mcp.CallToolRequest, input man
 	case "argocd":
 		switch action {
 		case "sync":
-			result, err = gitops.SyncArgoApp(ctx, dynClient, input.Namespace, input.Name)
+			result, err = gitops.SyncArgoApp(ctx, dynClient, input.Namespace, input.Name, gitops.ArgoSyncOptions{
+				Prune:                  true,
+				PruneLast:              true,
+				AutoCreateNamespace:    true,
+				PrunePropagationPolicy: "foreground",
+			})
 		case "suspend":
 			result, err = gitops.SetArgoAutoSync(ctx, dynClient, input.Namespace, input.Name, false)
 		case "resume":

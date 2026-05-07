@@ -363,18 +363,25 @@ export function WorkloadView({
       onTabChange={handleTabChange}
       // Render props
       renderLogsTab={(props) => <LogsTabContent {...props} />}
-      renderMetricsTab={({ kind, namespace: ns, name: n }) => (
-        <PrometheusCharts kind={kind} namespace={ns} name={n} showEmptyState />
-      )}
+      renderMetricsTab={expanded
+        ? ({ kind, namespace: ns, name: n }) => (
+            <PrometheusCharts kind={kind} namespace={ns} name={n} showEmptyState />
+          )
+        : undefined}
       isMetricsAvailable={(kind, res) =>
-        isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')
+        expanded && isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')
       }
       onDuplicate={handleDuplicate}
       actionsBarProps={actionsBarProps}
       rendererOverrides={rendererOverrides}
       resolvedEnvFrom={resolvedEnvFrom}
       renderOverviewExtra={({ kind: k, namespace: ns, name: n }) => (
-        <AuditSection kind={k} namespace={ns} name={n} />
+        <>
+          {!expanded && isPrometheusSupported(k) && !(k === 'Pod' && resource?.status?.phase === 'Pending') && (
+            <PrometheusCharts kind={k} namespace={ns} name={n} showEmptyState />
+          )}
+          <AuditSection kind={k} namespace={ns} name={n} />
+        </>
       )}
     />
     <CreateResourceDialog

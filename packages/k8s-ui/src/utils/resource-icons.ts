@@ -37,6 +37,7 @@ import {
   FolderOpen,
   UserCog,
   Activity,
+  BarChart3,
 
   // Scaling
   Scaling,
@@ -141,6 +142,7 @@ const KIND_ICON_MAP: Record<string, LucideIcon> = {
   helmrepository: Anchor, // FluxCD HelmRepository
 
   // Karpenter
+  dashboard: BarChart3,
   nodepool: Server,
   nodeclaim: Server,
   ec2nodeclass: Server,

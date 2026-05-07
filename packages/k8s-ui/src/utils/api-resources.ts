@@ -121,6 +121,8 @@ export function formatGroupName(group: string): string {
     'velero.io': 'Velero',
     'external-secrets.io': 'External Secrets',
     'keda.sh': 'KEDA',
+    'karpenter.sh': 'Karpenter',
+    'karpenter.k8s.aws': 'Karpenter',
     'gateway.networking.k8s.io': 'Gateway API',
     'traefik.io': 'Traefik',
     'traefik.containo.us': 'Traefik',

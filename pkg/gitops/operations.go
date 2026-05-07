@@ -99,10 +99,27 @@ type SourceRef struct {
 	Name      string
 }
 
+// ArgoSyncOptions mirrors the main ArgoCD UI sync controls.
+type ArgoSyncOptions struct {
+	Revision                 string
+	Prune                    bool
+	DryRun                   bool
+	ApplyOnly                bool
+	Force                    bool
+	SkipSchemaValidation     bool
+	AutoCreateNamespace      bool
+	PruneLast                bool
+	ApplyOutOfSyncOnly       bool
+	RespectIgnoreDifferences bool
+	ServerSideApply          bool
+	PrunePropagationPolicy   string
+	Replace                  bool
+}
+
 // --- ArgoCD operations ---
 
 // SyncArgoApp triggers a sync operation on an ArgoCD Application.
-func SyncArgoApp(ctx context.Context, dynClient dynamic.Interface, namespace, name string) (OperationResult, error) {
+func SyncArgoApp(ctx context.Context, dynClient dynamic.Interface, namespace, name string, opts ArgoSyncOptions) (OperationResult, error) {
 	app, err := dynClient.Resource(argoAppGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -127,10 +144,7 @@ func SyncArgoApp(ctx context.Context, dynClient dynamic.Interface, namespace, na
 			"initiatedBy": map[string]any{
 				"username": "radar",
 			},
-			"sync": map[string]any{
-				"revision": "",
-				"prune":    true,
-			},
+			"sync": buildArgoSyncOperation(opts),
 		},
 	}
 
@@ -147,6 +161,55 @@ func SyncArgoApp(ctx context.Context, dynClient dynamic.Interface, namespace, na
 		Name:        name,
 		RequestedAt: timestamp,
 	}, nil
+}
+
+func buildArgoSyncOperation(opts ArgoSyncOptions) map[string]any {
+	sync := map[string]any{
+		"revision": opts.Revision,
+		"prune":    opts.Prune,
+		"dryRun":   opts.DryRun,
+	}
+
+	strategyName := "hook"
+	if opts.ApplyOnly {
+		strategyName = "apply"
+	}
+	sync["syncStrategy"] = map[string]any{
+		strategyName: map[string]any{
+			"force": opts.Force,
+		},
+	}
+
+	var syncOptions []string
+	if opts.SkipSchemaValidation {
+		syncOptions = append(syncOptions, "Validate=false")
+	}
+	if opts.AutoCreateNamespace {
+		syncOptions = append(syncOptions, "CreateNamespace=true")
+	}
+	if opts.PruneLast {
+		syncOptions = append(syncOptions, "PruneLast=true")
+	}
+	if opts.ApplyOutOfSyncOnly {
+		syncOptions = append(syncOptions, "ApplyOutOfSyncOnly=true")
+	}
+	if opts.RespectIgnoreDifferences {
+		syncOptions = append(syncOptions, "RespectIgnoreDifferences=true")
+	}
+	if opts.ServerSideApply {
+		syncOptions = append(syncOptions, "ServerSideApply=true")
+	}
+	if policy := strings.TrimSpace(opts.PrunePropagationPolicy); policy != "" {
+		syncOptions = append(syncOptions, "PrunePropagationPolicy="+policy)
+	}
+	if opts.Replace {
+		syncOptions = append(syncOptions, "Replace=true")
+	}
+	if len(syncOptions) > 0 {
+		sync["syncOptions"] = syncOptions
+	}
+
+	return sync
 }
 
 // SetArgoAutoSync enables or disables automated sync on an ArgoCD Application.

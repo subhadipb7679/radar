@@ -1562,10 +1562,14 @@ interface ColumnSettings {
   widths: Record<string, number>
 }
 
+function columnSettingsKey(kind: string, group?: string): string {
+  const normalizedGroup = group || 'core'
+  return `${COLUMN_SETTINGS_PREFIX}${normalizedGroup}:${normalizeKindToPlural(kind, group)}`
+}
+
 function loadColumnSettings(kind: string, group?: string): ColumnSettings | null {
   try {
-    const key = COLUMN_SETTINGS_PREFIX + normalizeKindToPlural(kind, group)
-    const raw = localStorage.getItem(key)
+    const raw = localStorage.getItem(columnSettingsKey(kind, group))
     if (raw) return JSON.parse(raw)
   } catch { /* ignore */ }
   return null
@@ -1573,15 +1577,13 @@ function loadColumnSettings(kind: string, group?: string): ColumnSettings | null
 
 function saveColumnSettings(kind: string, group: string | undefined, settings: ColumnSettings) {
   try {
-    const key = COLUMN_SETTINGS_PREFIX + normalizeKindToPlural(kind, group)
-    localStorage.setItem(key, JSON.stringify(settings))
+    localStorage.setItem(columnSettingsKey(kind, group), JSON.stringify(settings))
   } catch { /* ignore */ }
 }
 
 function clearColumnSettings(kind: string, group?: string) {
   try {
-    const key = COLUMN_SETTINGS_PREFIX + normalizeKindToPlural(kind, group)
-    localStorage.removeItem(key)
+    localStorage.removeItem(columnSettingsKey(kind, group))
   } catch { /* ignore */ }
 }
 
@@ -1616,6 +1618,19 @@ export interface ResourceQueryResult {
   refetch?: () => void
   dataUpdatedAt?: number
 }
+
+interface RefreshIntervalOption {
+  value: number
+  label: string
+}
+
+const DEFAULT_REFRESH_INTERVAL_OPTIONS: RefreshIntervalOption[] = [
+  { value: 5000, label: '5s' },
+  { value: 10000, label: '10s' },
+  { value: 30000, label: '30s' },
+  { value: 60000, label: '1m' },
+  { value: 120000, label: '2m' },
+]
 
 interface ResourcesViewProps {
   namespaces: string[]
@@ -1655,6 +1670,12 @@ interface ResourcesViewProps {
   hideSidebar?: boolean
   /** Callback when the [+] create button is clicked. Receives the currently selected kind info. */
   onCreateResource?: (kind: { name: string; kind: string; group: string } | null) => void
+  refreshIntervalMs?: number
+  refreshIntervalOptions?: RefreshIntervalOption[]
+  onRefreshIntervalChange?: (intervalMs: number) => void
+  renderCustomKindContent?: (kind: { name: string; kind: string; group: string }) => React.ReactNode
+  resourceColumnSettings?: Record<string, ColumnSettings>
+  onResourceColumnSettingsChange?: (key: string, settings: ColumnSettings) => void
   /** Columns prepended to KNOWN_COLUMNS for every kind. For example, a
    *  multi-cluster host can inject a leading Cluster column. Each extra
    *  column is self-contained (own render/sort/filter), so the host
@@ -1772,6 +1793,12 @@ export function ResourcesView({
   onSelectedKindChange,
   hideSidebar = false,
   onCreateResource,
+  refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_OPTIONS[0].value,
+  refreshIntervalOptions = DEFAULT_REFRESH_INTERVAL_OPTIONS,
+  onRefreshIntervalChange,
+  renderCustomKindContent,
+  resourceColumnSettings,
+  onResourceColumnSettingsChange,
   extraLeadingColumns,
   onRowSelect,
 }: ResourcesViewProps) {
@@ -1908,8 +1935,13 @@ export function ResourcesView({
     return m
   }, [extraLeadingColumns])
 
+  const currentColumnSettingsKey = columnSettingsKey(selectedKind.name, selectedKind.group)
+  const persistedColumnSettings = resourceColumnSettings?.[currentColumnSettingsKey]
+  const applyingColumnSettings = useRef(false)
+
   useEffect(() => {
-    const saved = loadColumnSettings(selectedKind.name, selectedKind.group)
+    const saved = persistedColumnSettings ?? loadColumnSettings(selectedKind.name, selectedKind.group)
+    applyingColumnSettings.current = true
     if (saved) {
       // If saved columns are just the defaults but this kind has specialized columns,
       // discard the stale save and use the specialized columns instead
@@ -1929,21 +1961,22 @@ export function ResourcesView({
       setVisibleColumns(getDefaultVisibleColumns(allColumns))
       setColumnWidths({})
     }
-  }, [selectedKind.name, selectedKind.group, allColumns])
+  }, [selectedKind.name, selectedKind.group, allColumns, persistedColumnSettings])
 
-  // Save column settings when they change (skip initial load)
-  const isColumnSettingsLoaded = useRef(false)
+  // Save column settings whenever they change.
   useEffect(() => {
     if (visibleColumns.size === 0) return // not loaded yet
-    if (!isColumnSettingsLoaded.current) {
-      isColumnSettingsLoaded.current = true
+    if (applyingColumnSettings.current) {
+      applyingColumnSettings.current = false
       return
     }
-    saveColumnSettings(selectedKind.name, selectedKind.group, {
+    const settings = {
       visible: Array.from(visibleColumns),
       widths: columnWidths,
-    })
-  }, [visibleColumns, columnWidths, selectedKind.name, selectedKind.group])
+    }
+    saveColumnSettings(selectedKind.name, selectedKind.group, settings)
+    onResourceColumnSettingsChange?.(currentColumnSettingsKey, settings)
+  }, [visibleColumns, columnWidths, selectedKind.name, selectedKind.group, currentColumnSettingsKey, onResourceColumnSettingsChange])
 
   // Close column picker on outside click or Escape
   useEffect(() => {
@@ -2048,7 +2081,6 @@ export function ResourcesView({
     clearColumnSettings(selectedKind.name, selectedKind.group)
     setVisibleColumns(getDefaultVisibleColumns(allColumns))
     setColumnWidths({})
-    isColumnSettingsLoaded.current = false
   }, [selectedKind.name, selectedKind.group, allColumns])
 
   // Keyboard shortcut: / to focus search
@@ -2991,6 +3023,7 @@ export function ResourcesView({
   // Keep refs in sync for keyboard shortcuts (shortcuts can't capture filteredResources directly)
   filteredResourceCountRef.current = filteredResources.length
   highlightedResourceRef.current = highlightedIndex >= 0 ? filteredResources[highlightedIndex] ?? null : null
+  const customKindContent = renderCustomKindContent?.(selectedKind) ?? null
 
   // Scroll to selected row when selection changes or data loads
   const lastScrolledResource = useRef<string | null>(null)
@@ -3474,6 +3507,24 @@ export function ResourcesView({
               <span>Updated <span className="inline-block min-w-[4ch] tabular-nums">{formatAge(lastUpdated.toISOString())}</span></span>
             </div>
           )}
+          {onRefreshIntervalChange && refreshIntervalOptions.length > 0 && (
+            <div className="relative">
+              <select
+                aria-label="Refresh interval"
+                title="Refresh interval"
+                value={refreshIntervalMs}
+                onChange={(event) => onRefreshIntervalChange(Number(event.target.value))}
+                className="appearance-none bg-theme-surface border border-theme-border rounded-lg pl-2 pr-6 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated focus:outline-none focus:ring-1 focus:ring-theme-border"
+              >
+                {refreshIntervalOptions.map(option => (
+                  <option key={option.value} value={option.value}>
+                    Every {option.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-theme-text-tertiary pointer-events-none" />
+            </div>
+          )}
           {/* Column picker */}
           <div className="relative" ref={columnPickerRef}>
             <button
@@ -3558,7 +3609,9 @@ export function ResourcesView({
             }
           }}
         >
-          {isLoading ? (
+          {customKindContent ? (
+            customKindContent
+          ) : isLoading ? (
             <PaneLoader className="absolute inset-0" />
           ) : isSelectedForbidden ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-theme-text-tertiary">
