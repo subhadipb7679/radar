@@ -684,6 +684,11 @@ type ContextInfo struct {
 	User      string `json:"user"`
 	Namespace string `json:"namespace"`
 	IsCurrent bool   `json:"isCurrent"`
+	// Source labels the kubeconfig file this context came from
+	// (e.g. "kube-cluster-paris" or "prod"). Set only in multi-file
+	// mode; populated for every context — not just colliding ones — so
+	// the dropdown can show provenance even without ambiguity.
+	Source string `json:"source,omitempty"`
 }
 
 // GetAvailableContexts returns all available contexts from the kubeconfig
@@ -760,6 +765,7 @@ func GetAvailableContexts() ([]ContextInfo, error) {
 				User:      ctx.AuthInfo,
 				Namespace: ctx.Namespace,
 				IsCurrent: qName == currentCtx,
+				Source:    kubeconfigSourceLabel(entry.SourceFile),
 			})
 		}
 		return contexts, nil

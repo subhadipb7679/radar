@@ -207,6 +207,152 @@ func TestBuildContextRegistry_ThreeWayCollision(t *testing.T) {
 	}
 }
 
+// Generic "config" basenames in distinctly-named parent dirs must
+// disambiguate via parent dir, not basename — three kubeconfigs at
+// ~/.kube-cluster-{paris,london,rome}/config sharing context name
+// "admin@cluster" should yield three distinct qualified names, not
+// "admin@cluster (config)" / "(config #2)".
+func TestBuildContextRegistry_GenericFilenameUsesParentDir(t *testing.T) {
+	dirParis := filepath.Join(t.TempDir(), ".kube-cluster-paris")
+	dirLondon := filepath.Join(t.TempDir(), ".kube-cluster-london")
+	dirRome := filepath.Join(t.TempDir(), ".kube-cluster-rome")
+	for _, d := range []string{dirParis, dirLondon, dirRome} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	f1 := writeKubeconfig(t, dirParis, "config", "admin@cluster", []kubeEntry{
+		{ctxName: "admin@cluster", userName: "admin", clusterName: "cluster"},
+	})
+	f2 := writeKubeconfig(t, dirLondon, "config", "admin@cluster", []kubeEntry{
+		{ctxName: "admin@cluster", userName: "admin", clusterName: "cluster"},
+	})
+	f3 := writeKubeconfig(t, dirRome, "config", "admin@cluster", []kubeEntry{
+		{ctxName: "admin@cluster", userName: "admin", clusterName: "cluster"},
+	})
+
+	registry, _ := buildContextRegistry([]string{f1, f2, f3})
+
+	if len(registry) != 3 {
+		t.Fatalf("registry size: got %d, want 3", len(registry))
+	}
+	// First file keeps the original name.
+	if e, ok := registry["admin@cluster"]; !ok || e.SourceFile != f1 {
+		t.Errorf("'admin@cluster' should resolve to f1")
+	}
+	// Subsequent collisions use the leading-dot-stripped parent dir name.
+	if e, ok := registry["admin@cluster (kube-cluster-london)"]; !ok || e.SourceFile != f2 {
+		names := []string{}
+		for n := range registry {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		t.Errorf("'admin@cluster (kube-cluster-london)' should resolve to f2; registry has: %v", names)
+	}
+	if e, ok := registry["admin@cluster (kube-cluster-rome)"]; !ok || e.SourceFile != f3 {
+		names := []string{}
+		for n := range registry {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		t.Errorf("'admin@cluster (kube-cluster-rome)' should resolve to f3; registry has: %v", names)
+	}
+}
+
+func TestKubeconfigSourceLabel(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		// Generic filenames -> parent dir, leading dot stripped.
+		{"/home/u/.kube-cluster-paris/config", "kube-cluster-paris"},
+		{"/home/u/.kube/config", "kube"},
+		{"/home/u/clusters/prod/kubeconfig", "prod"},
+		// Meaningful filenames -> filename without extension.
+		{"/home/u/.kube/configs/prod.yaml", "prod"},
+		{"/home/u/clusters/staging.yml", "staging"},
+		{"/tmp/eks-east.kubeconfig.yaml", "eks-east.kubeconfig"},
+		// Edge: file at root with generic name — parent is "/", fall through to base.
+		{"/config", "config"},
+		// Relative paths — SourceFile is normalised to absolute upstream,
+		// but pin the helper's behaviour so a future drift doesn't sneak
+		// silently past callers like aggregateExecPluginCommands.
+		{"config", "config"},                  // no parent
+		{"./config", "config"},                // current-dir parent rejected
+		{"kube-cluster-paris/config", "kube-cluster-paris"}, // relative parent honored
+	}
+	for _, c := range cases {
+		if got := kubeconfigSourceLabel(c.path); got != c.want {
+			t.Errorf("kubeconfigSourceLabel(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
+// In multi-kubeconfig mode, every ContextInfo returned from
+// GetAvailableContexts must carry the source label of the file it came
+// from, even when context names don't collide. The frontend uses this
+// to render a "from kubeconfig X" affordance, and the contract is
+// invisible from the registry-level tests above.
+func TestGetAvailableContexts_PopulatesSourceInMultiFileMode(t *testing.T) {
+	parisDir := filepath.Join(t.TempDir(), ".kube-cluster-paris")
+	londonDir := filepath.Join(t.TempDir(), ".kube-cluster-london")
+	for _, d := range []string{parisDir, londonDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	f1 := writeKubeconfig(t, parisDir, "config", "ctx-paris", []kubeEntry{
+		{ctxName: "ctx-paris", userName: "u1", clusterName: "c1"},
+	})
+	f2 := writeKubeconfig(t, londonDir, "config", "ctx-london", []kubeEntry{
+		{ctxName: "ctx-london", userName: "u2", clusterName: "c2"},
+	})
+
+	clientMu.Lock()
+	prevRegistry := contextRegistry
+	prevConfigs := perFileConfigs
+	prevMtimes := perFileMtimes
+	prevPaths := kubeconfigPaths
+	prevName := contextName
+	registry, fileConfigs := buildContextRegistry([]string{f1, f2})
+	mtimes := make(map[string]time.Time, 2)
+	for _, p := range []string{f1, f2} {
+		if info, err := os.Stat(p); err == nil {
+			mtimes[p] = info.ModTime()
+		}
+	}
+	contextRegistry = registry
+	perFileConfigs = fileConfigs
+	perFileMtimes = mtimes
+	kubeconfigPaths = []string{f1, f2}
+	contextName = "ctx-paris"
+	clientMu.Unlock()
+	t.Cleanup(func() {
+		clientMu.Lock()
+		contextRegistry = prevRegistry
+		perFileConfigs = prevConfigs
+		perFileMtimes = prevMtimes
+		kubeconfigPaths = prevPaths
+		contextName = prevName
+		clientMu.Unlock()
+	})
+
+	contexts, err := GetAvailableContexts()
+	if err != nil {
+		t.Fatalf("GetAvailableContexts: %v", err)
+	}
+	bySource := map[string]string{} // qName -> source
+	for _, c := range contexts {
+		bySource[c.Name] = c.Source
+	}
+	if got, want := bySource["ctx-paris"], "kube-cluster-paris"; got != want {
+		t.Errorf("ctx-paris Source: got %q, want %q (all: %v)", got, want, bySource)
+	}
+	if got, want := bySource["ctx-london"], "kube-cluster-london"; got != want {
+		t.Errorf("ctx-london Source: got %q, want %q (all: %v)", got, want, bySource)
+	}
+}
+
 func TestPickInitialContext_PrefersFirstFileCurrentContext(t *testing.T) {
 	dir := t.TempDir()
 	f1 := writeKubeconfig(t, dir, "first.yaml", "from-first", []kubeEntry{

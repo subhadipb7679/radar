@@ -65,6 +65,11 @@ func main() {
 	// No-op on macOS/Windows.
 	logBootEnv()
 
+	// Disable WebKit's DMABUF renderer on Linux unless the user opts in —
+	// it produces blank windows on Wayland+KDE/NVIDIA and upstream won't fix.
+	// Must run before Wails initializes WebKit.
+	applyWebKitDefaults()
+
 	// GUI apps (macOS .app, Linux .desktop) get a minimal PATH that
 	// doesn't include user-installed tools like gke-gcloud-auth-plugin,
 	// gcloud, aws CLI, etc. Enrich PATH from the user's login shell.
@@ -165,7 +170,7 @@ func main() {
 			Handler: NewRedirectHandler(srv.ActualAddr(), cfg.Namespace),
 		},
 
-		Menu: createMenu(desktopApp),
+		Menu: createMenu(desktopApp, version),
 
 		BackgroundColour: options.NewRGBA(10, 10, 15, 255),
 

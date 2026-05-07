@@ -330,6 +330,9 @@ export interface ContextInfo {
   user: string
   namespace: string
   isCurrent: boolean
+  /** Source kubeconfig label (e.g. "kube-cluster-paris"). Set by backend
+   *  only when 2+ kubeconfig files are loaded; empty otherwise. */
+  source?: string
 }
 
 // Namespace
@@ -440,6 +443,7 @@ export interface APIResource {
 export interface HelmRelease {
   name: string
   namespace: string
+  // Empty means Helm stores release metadata in namespace.
   storageNamespace?: string
   chart: string
   chartVersion: string
@@ -465,6 +469,7 @@ export interface HelmRevision {
 export interface HelmReleaseDetail {
   name: string
   namespace: string
+  // Empty means Helm stores release metadata in namespace.
   storageNamespace?: string
   chart: string
   chartVersion: string
@@ -535,7 +540,7 @@ export interface UpgradeInfo {
   error?: string
 }
 
-// Batch upgrade info (map of "namespace/name" to UpgradeInfo)
+// Batch upgrade info keyed by "storageNamespace/name".
 export interface BatchUpgradeInfo {
   releases: Record<string, UpgradeInfo>
 }

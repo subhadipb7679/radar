@@ -1985,15 +1985,20 @@ function streamHelmProgress(
 
                 if (data.type === 'complete') {
                   resolve(data)
+                  return
                 } else if (data.type === 'error') {
                   reject(new Error(data.message || failureLabel))
+                  return
                 }
-              } catch {
-                // Ignore parse errors
+              } catch (err) {
+                reject(err instanceof Error ? err : new Error(`${failureLabel}: invalid progress event`))
+                return
               }
             }
           }
         }
+
+        reject(new Error(`${failureLabel}: stream ended before completion`))
       })
       .catch(reject)
   })
@@ -2004,10 +2009,13 @@ export function upgradeWithProgress(
   namespace: string,
   name: string,
   version: string,
+  repositoryName: string | undefined,
   onProgress: (event: InstallProgressEvent) => void
 ): Promise<void> {
+  const params = new URLSearchParams({ version })
+  if (repositoryName) params.set('repository', repositoryName)
   return streamHelmProgress(
-    `${getApiBase()}/helm/releases/${namespace}/${name}/upgrade-stream?version=${encodeURIComponent(version)}`,
+    `${getApiBase()}/helm/releases/${namespace}/${name}/upgrade-stream?${params.toString()}`,
     { method: 'POST' },
     onProgress,
     'Upgrade failed',

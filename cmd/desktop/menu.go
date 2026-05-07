@@ -6,7 +6,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-func createMenu(desktopApp *DesktopApp) *menu.Menu {
+func createMenu(desktopApp *DesktopApp, version string) *menu.Menu {
 	appMenu := menu.NewMenu()
 
 	// File menu
@@ -105,7 +105,7 @@ func createMenu(desktopApp *DesktopApp) *menu.Menu {
 		runtime.MessageDialog(desktopApp.ctx, runtime.MessageDialogOptions{
 			Type:    runtime.InfoDialog,
 			Title:   "About Radar",
-			Message: "Radar — Kubernetes Visibility Tool\nBuilt by Skyhook\n\nhttps://github.com/skyhook-io/radar",
+			Message: "Radar — Kubernetes Visibility Tool\nBuilt by Skyhook\n\nVersion: " + version + "\n\nhttps://github.com/skyhook-io/radar",
 		})
 	})
 	helpMenu.AddText("Documentation", nil, func(_ *menu.CallbackData) {
