@@ -280,6 +280,16 @@ func (s *Server) setupRoutes() {
 			r.Delete("/portforwards/{id}", s.handleStopPortForward)
 			r.Get("/portforwards/available/{type}/{namespace}/{name}", s.handleGetAvailablePorts)
 
+			// Data explorers
+			r.Get("/data/mongodb/instances", s.handleMongoInstances)
+			r.Post("/data/mongodb/sessions", s.handleMongoConnect)
+			r.Delete("/data/mongodb/sessions/{sessionID}", s.handleMongoDisconnect)
+			r.Get("/data/mongodb/sessions/{sessionID}/databases", s.handleMongoDatabases)
+			r.Get("/data/mongodb/sessions/{sessionID}/databases/{database}/collections", s.handleMongoCollections)
+			r.Get("/data/mongodb/sessions/{sessionID}/databases/{database}/collections/{collection}/documents", s.handleMongoDocuments)
+			r.Put("/data/mongodb/sessions/{sessionID}/databases/{database}/collections/{collection}/documents", s.handleMongoUpdateDocument)
+			r.Get("/data/mongodb/sessions/{sessionID}/databases/{database}/collections/{collection}/indexes", s.handleMongoIndexes)
+
 			// Active sessions (for context switch confirmation)
 			r.Get("/sessions", s.handleGetSessions)
 

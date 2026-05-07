@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../api/config'
 
-type Theme = 'dark' | 'light'
+export type Theme = 'dark' | 'light' | 'violet'
 
 interface ThemeContextType {
   theme: Theme
@@ -12,12 +12,17 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined)
 
 const THEME_STORAGE_KEY = 'radar-theme'
+const THEMES: Theme[] = ['light', 'dark', 'violet']
+
+function isTheme(value: string | null | undefined): value is Theme {
+  return value === 'light' || value === 'dark' || value === 'violet'
+}
 
 function getInitialTheme(): Theme {
   // Check localStorage first
   if (typeof window !== 'undefined') {
     const stored = localStorage.getItem(THEME_STORAGE_KEY)
-    if (stored === 'light' || stored === 'dark') {
+    if (isTheme(stored)) {
       return stored
     }
     // Check system preference
@@ -45,13 +50,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }
 
   const toggleTheme = () => {
-    setTheme(theme === 'dark' ? 'light' : 'dark')
+    const currentIndex = THEMES.indexOf(theme)
+    setTheme(THEMES[(currentIndex + 1) % THEMES.length])
   }
 
   // Apply theme to document
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark')
-    document.documentElement.style.colorScheme = theme
+    document.documentElement.classList.toggle('dark', theme === 'dark' || theme === 'violet')
+    document.documentElement.classList.toggle('theme-violet', theme === 'violet')
+    document.documentElement.style.colorScheme = theme === 'light' ? 'light' : 'dark'
   }, [theme])
 
   // Sync theme from server (persisted settings survive port changes in desktop app)
@@ -59,7 +66,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     fetch(apiUrl('/settings'), { credentials: getCredentialsMode(), headers: getAuthHeaders() })
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
-        if (data?.theme && (data.theme === 'dark' || data.theme === 'light') && data.theme !== theme) {
+        if (isTheme(data?.theme) && data.theme !== theme) {
           setThemeState(data.theme)
           localStorage.setItem(THEME_STORAGE_KEY, data.theme)
         }

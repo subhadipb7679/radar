@@ -95,6 +95,209 @@ export async function fetchJSON<T>(path: string): Promise<T> {
   return response.json()
 }
 
+async function sendJSON<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: unknown): Promise<T> {
+  const response = await apiFetch(`${getApiBase()}${path}`, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
+    throw new ApiError(errorData.error || `HTTP ${response.status}`, response.status, errorData)
+  }
+  return response.json()
+}
+
+// ============================================================================
+// Data / MongoDB Explorer
+// ============================================================================
+
+export interface MongoPod {
+  name: string
+  ready: string
+  phase: string
+  role?: string
+  podIp?: string
+  nodeName?: string
+  restarts: number
+  startedAt?: string
+}
+
+export interface MongoCredentialRef {
+  namespace: string
+  name: string
+  usernameKey?: string
+  passwordKey?: string
+  authSourceKey?: string
+  usernameHint?: string
+  authSource?: string
+  scope: string
+}
+
+export interface MongoBackupWorkload {
+  kind: string
+  name: string
+  schedule?: string
+  suspended?: boolean
+  lastRun?: string
+  status?: string
+}
+
+export interface MongoInstance {
+  id: string
+  context: string
+  name: string
+  namespace: string
+  serviceName: string
+  serviceType: string
+  serviceClusterIp?: string
+  port: number
+  architecture?: string
+  version?: string
+  helmRelease?: string
+  helmChart?: string
+  replicas?: number
+  readyReplicas?: number
+  pods: MongoPod[]
+  credentials: MongoCredentialRef[]
+  backups: MongoBackupWorkload[]
+  labels?: Record<string, string>
+  warnings?: string[]
+}
+
+export interface MongoConnectRequest {
+  instanceId?: string
+  namespace: string
+  serviceName: string
+  port: number
+  username?: string
+  password?: string
+  authSource?: string
+  credential?: MongoCredentialRef
+}
+
+export interface MongoSession {
+  id: string
+  instanceId: string
+  context: string
+  namespace: string
+  serviceName: string
+  localPort: number
+  createdAt: string
+}
+
+export interface MongoDatabase {
+  name: string
+}
+
+export interface MongoCollection {
+  name: string
+}
+
+export interface MongoDocumentsResponse {
+  documents: unknown[]
+  limit: number
+}
+
+export interface MongoUpdateDocumentRequest {
+  sessionID: string
+  database: string
+  collection: string
+  id: unknown
+  document: unknown
+}
+
+export function useMongoInstances() {
+  return useQuery<MongoInstance[]>({
+    queryKey: ['data', 'mongodb', 'instances'],
+    queryFn: () => fetchJSON('/data/mongodb/instances'),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  })
+}
+
+export function useConnectMongo() {
+  return useMutation<MongoSession, Error, MongoConnectRequest>({
+    mutationFn: (request) => sendJSON('/data/mongodb/sessions', 'POST', request),
+    meta: {
+      errorMessage: 'Failed to connect to MongoDB',
+      successMessage: 'Connected to MongoDB',
+    },
+  })
+}
+
+export function useDisconnectMongo() {
+  const queryClient = useQueryClient()
+  return useMutation<{ status: string }, Error, string>({
+    mutationFn: (sessionID) => sendJSON(`/data/mongodb/sessions/${encodeURIComponent(sessionID)}`, 'DELETE'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['data', 'mongodb'] })
+    },
+  })
+}
+
+export function useMongoDatabases(sessionID?: string) {
+  return useQuery<MongoDatabase[]>({
+    queryKey: ['data', 'mongodb', 'sessions', sessionID, 'databases'],
+    queryFn: sessionID ? () => fetchJSON(`/data/mongodb/sessions/${encodeURIComponent(sessionID)}/databases`) : skipToken,
+    enabled: !!sessionID,
+  })
+}
+
+export function useMongoCollections(sessionID?: string, database?: string) {
+  return useQuery<MongoCollection[]>({
+    queryKey: ['data', 'mongodb', 'sessions', sessionID, database, 'collections'],
+    queryFn: sessionID && database
+      ? () => fetchJSON(`/data/mongodb/sessions/${encodeURIComponent(sessionID)}/databases/${encodeURIComponent(database)}/collections`)
+      : skipToken,
+    enabled: !!sessionID && !!database,
+  })
+}
+
+export function useMongoDocuments(sessionID?: string, database?: string, collection?: string, filter = '{}', limit = 50) {
+  return useQuery<MongoDocumentsResponse>({
+    queryKey: ['data', 'mongodb', 'sessions', sessionID, database, collection, 'documents', filter, limit],
+    queryFn: sessionID && database && collection
+      ? () => {
+        const params = new URLSearchParams({ limit: String(limit) })
+        if (filter.trim()) params.set('filter', filter)
+        return fetchJSON(`/data/mongodb/sessions/${encodeURIComponent(sessionID)}/databases/${encodeURIComponent(database)}/collections/${encodeURIComponent(collection)}/documents?${params}`)
+      }
+      : skipToken,
+    enabled: !!sessionID && !!database && !!collection,
+  })
+}
+
+export function useMongoIndexes(sessionID?: string, database?: string, collection?: string) {
+  return useQuery<unknown[]>({
+    queryKey: ['data', 'mongodb', 'sessions', sessionID, database, collection, 'indexes'],
+    queryFn: sessionID && database && collection
+      ? () => fetchJSON(`/data/mongodb/sessions/${encodeURIComponent(sessionID)}/databases/${encodeURIComponent(database)}/collections/${encodeURIComponent(collection)}/indexes`)
+      : skipToken,
+    enabled: !!sessionID && !!database && !!collection,
+  })
+}
+
+export function useUpdateMongoDocument() {
+  const queryClient = useQueryClient()
+  return useMutation<unknown, Error, MongoUpdateDocumentRequest>({
+    mutationFn: ({ sessionID, database, collection, id, document }) => sendJSON(
+      `/data/mongodb/sessions/${encodeURIComponent(sessionID)}/databases/${encodeURIComponent(database)}/collections/${encodeURIComponent(collection)}/documents`,
+      'PUT',
+      { id, document },
+    ),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['data', 'mongodb', 'sessions', variables.sessionID, variables.database, variables.collection, 'documents'],
+      })
+    },
+    meta: {
+      errorMessage: 'Failed to save MongoDB document',
+      successMessage: 'MongoDB document saved',
+    },
+  })
+}
+
 // ============================================================================
 // Dashboard
 // ============================================================================

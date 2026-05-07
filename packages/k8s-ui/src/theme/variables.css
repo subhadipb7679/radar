@@ -141,3 +141,68 @@
   --shadow-drawer: -16px 0 60px rgba(0,0,0,0.6), -6px 0 20px rgba(0,0,0,0.4);
   --topology-node-shadow: 0 2px 6px rgba(0,0,0,0.2), 0 6px 16px rgba(0,0,0,0.15);
 }
+
+.theme-violet {
+  color-scheme: dark;
+
+  /* Violet Glow: dark glass panels with a restrained purple/cyan accent. */
+  --color-brand: #A855F7;
+  --color-brand-light: #C084FC;
+  --brand-rgb: 168 85 247;
+
+  --bg-base: #090512;
+  --bg-surface: #130D23;
+  --bg-elevated: #211538;
+  --bg-hover: #2D1D4A;
+  --bg-active: #341B5D;
+
+  --text-primary: #F8F5FF;
+  --text-secondary: #DED5F2;
+  --text-tertiary: #B9A7D8;
+  --text-disabled: #725F92;
+
+  --border-default: rgba(192, 132, 252, 0.20);
+  --border-light: rgba(216, 180, 254, 0.28);
+  --border-subtle: rgba(192, 132, 252, 0.08);
+  --border-focus: #C084FC;
+
+  --accent: #A855F7;
+  --accent-light: #22D3EE;
+  --accent-muted: rgba(168, 85, 247, 0.18);
+  --accent-text: #D8B4FE;
+
+  --selection-bg: rgba(168, 85, 247, 0.16);
+  --selection-bg-strong: rgba(168, 85, 247, 0.28);
+  --selection-text: #F0ABFC;
+  --selection-border: rgba(216, 180, 254, 0.35);
+
+  --glow-brand: rgba(192, 132, 252, 0.34);
+  --glow-brand-sm: 0 0 10px rgba(192, 132, 252, 0.34), 0 0 24px rgba(34, 211, 238, 0.10);
+  --glow-brand-md: 0 0 18px rgba(192, 132, 252, 0.34), 0 0 42px rgba(34, 211, 238, 0.14);
+
+  --shadow-sm: 0 1px 3px rgba(3,0,10,0.5), 0 0 0 1px rgba(216,180,254,0.08);
+  --shadow-md: 0 8px 24px -10px rgba(168,85,247,0.36), 0 2px 8px rgba(0,0,0,0.35), 0 0 0 1px rgba(216,180,254,0.08);
+  --shadow-lg: 0 22px 60px -24px rgba(168,85,247,0.45), 0 8px 24px rgba(0,0,0,0.35), 0 0 0 1px rgba(216,180,254,0.08);
+  --shadow-drawer: -18px 0 70px rgba(18, 4, 38, 0.86), -8px 0 28px rgba(168,85,247,0.20);
+
+  --topology-node-border: rgba(216, 180, 254, 0.18);
+  --topology-node-shadow: 0 6px 20px rgba(0,0,0,0.28), 0 0 26px rgba(168,85,247,0.12);
+  --topology-bg-dots: rgba(192, 132, 252, 0.12);
+
+  --group-border-namespace: rgba(34, 211, 238, 0.38);
+  --group-border-app: rgba(168, 85, 247, 0.42);
+  --group-border-label: rgba(236, 72, 153, 0.38);
+  --group-header-namespace: rgba(34, 211, 238, 0.12);
+  --group-header-app: rgba(168, 85, 247, 0.16);
+  --group-header-label: rgba(236, 72, 153, 0.14);
+  --group-label-namespace: #67E8F9;
+  --group-label-app: #D8B4FE;
+  --group-label-label: #F9A8D4;
+  --group-icon-namespace: #22D3EE;
+  --group-icon-app: #A855F7;
+  --group-icon-label: #EC4899;
+
+  --scrollbar-track: #120B22;
+  --scrollbar-thumb: #3D275C;
+  --scrollbar-thumb-hover: #5B3A85;
+}

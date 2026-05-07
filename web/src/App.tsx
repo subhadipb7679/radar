@@ -17,6 +17,7 @@ import { HelmView } from './components/helm/HelmView'
 import { TrafficView } from './components/traffic/TrafficView'
 import { CostView } from './components/cost/CostView'
 import { AuditView } from './components/audit/AuditView'
+import { MongoDataView } from './components/data/MongoDataView'
 import { HelmReleaseDrawer } from './components/helm/HelmReleaseDrawer'
 import { PortForwardProvider, PortForwardIndicator, PortForwardPanel } from './components/portforward/PortForwardManager'
 import { DockProvider, BottomDock, useDock, useOpenLocalTerminal } from './components/dock'
@@ -40,7 +41,7 @@ import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/con
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import radarLoadingIcon from '@skyhook-io/k8s-ui/assets/radar/radar-icon-loading.svg'
-import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck } from 'lucide-react'
+import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Sparkles, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck, Database } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
@@ -126,8 +127,8 @@ function ArgoIcon({ className }: { className?: string }) {
   )
 }
 
-// Extended MainView type that includes traffic, cost, ArgoCD, and special routes.
-type ExtendedMainView = MainView | 'traffic' | 'cost' | 'argocd' | 'workload' | 'audit'
+// Extended MainView type that includes traffic, cost, ArgoCD, data, and special routes.
+type ExtendedMainView = MainView | 'traffic' | 'cost' | 'argocd' | 'workload' | 'audit' | 'data'
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
@@ -142,6 +143,7 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   if (path === 'argocd') return 'argocd'
   if (path === 'workload') return 'workload'
   if (path === 'audit') return 'audit'
+  if (path === 'data') return 'data'
   return 'home'
 }
 
@@ -408,7 +410,7 @@ function AppInner() {
   const contextSwitcherRef = useRef<ContextSwitcherHandle>(null)
 
   // View switching keyboard shortcuts
-  const views: ExtendedMainView[] = ['home', 'topology', 'resources', 'timeline', 'helm', 'traffic', 'argocd', 'cost', 'audit']
+  const views: ExtendedMainView[] = ['home', 'topology', 'resources', 'timeline', 'helm', 'traffic', 'argocd', 'data', 'cost', 'audit']
   useRegisterShortcuts([
     ...views.map((view, i) => ({
       id: `view-${view}`,
@@ -437,7 +439,7 @@ function AppInner() {
     {
       id: 'theme-toggle',
       keys: 't',
-      description: 'Toggle dark/light theme',
+      description: 'Cycle app theme',
       category: 'General' as const,
       scope: 'global' as const,
       handler: () => toggleTheme(),
@@ -960,51 +962,44 @@ function AppInner() {
           )}
         </div>
 
-        {/* Center: View tabs — absolute centered on wide, flows after left section on narrow */}
-        <div className="md:absolute md:left-1/2 md:-translate-x-1/2 flex items-center gap-1 bg-theme-elevated/50 rounded-full p-1 ml-2 md:ml-0">
-          {([
-            { view: 'home' as const, icon: Home, label: 'Home' },
-            { view: 'topology' as const, icon: Network, label: 'Topology' },
-            { view: 'resources' as const, icon: List, label: 'Resources' },
-            { view: 'timeline' as const, icon: Clock, label: 'Timeline' },
-            { view: 'helm' as const, icon: Package, label: 'Helm' },
-            { view: 'traffic' as const, icon: Activity, label: 'Traffic' },
-            { view: 'argocd' as const, icon: ArgoIcon, label: 'ArgoCD' },
-            // Cost is intentionally hidden from the pill bar for now — the view still
-            // exists and is reachable via /cost, the Home dashboard card, and the
-            // command palette (⌘K). Remove this comment to restore it.
-            { view: 'audit' as const, icon: ShieldCheck, label: 'Audit' },
-          ] as const).map(({ view, icon: Icon, label }) => (
-            <Tooltip key={view} content={label} delay={100} position="bottom">
-              <button
-                onClick={() => setMainView(view)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-sm rounded-full transition-colors ${
-                  mainView === view
-                    ? 'bg-skyhook-600 dark:bg-skyhook-500 text-white shadow-glow-brand-sm'
-                    : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-hover'
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                {/* Labels appear only when the absolute-centered nav has
-                    enough horizontal room past the left section. Right-side
-                    chrome that adds further pressure (Connected text, star
-                    count) is intentionally pushed to the next tier (xl) so
-                    label rendering and right-side expansion stay decoupled.
-                    Per-button Tooltip discloses labels on hover when the
-                    icon-only viewport is in effect. The 1440 anchor is an
-                    off-system breakpoint chosen by measurement at the time
-                    of this PR — recompute if the cluster switcher cap or
-                    other left-section chrome changes appreciably. */}
-                <span className="hidden min-[1440px]:inline">{label}</span>
-              </button>
-            </Tooltip>
-          ))}
+        {/* Center: View tabs */}
+        <div className="flex flex-1 min-w-0 justify-center px-2">
+          <div className="flex max-w-full items-center gap-1 overflow-x-auto bg-theme-elevated/50 rounded-full p-1">
+            {([
+              { view: 'home' as const, icon: Home, label: 'Home' },
+              { view: 'topology' as const, icon: Network, label: 'Topology' },
+              { view: 'resources' as const, icon: List, label: 'Resources' },
+              { view: 'timeline' as const, icon: Clock, label: 'Timeline' },
+              { view: 'helm' as const, icon: Package, label: 'Helm' },
+              { view: 'traffic' as const, icon: Activity, label: 'Traffic' },
+              { view: 'argocd' as const, icon: ArgoIcon, label: 'ArgoCD' },
+              { view: 'data' as const, icon: Database, label: 'Data' },
+              // Cost is intentionally hidden from the pill bar for now — the view still
+              // exists and is reachable via /cost, the Home dashboard card, and the
+              // command palette (⌘K). Remove this comment to restore it.
+              { view: 'audit' as const, icon: ShieldCheck, label: 'Audit' },
+            ] as const).map(({ view, icon: Icon, label }) => (
+              <Tooltip key={view} content={label} delay={100} position="bottom">
+                <button
+                  onClick={() => setMainView(view)}
+                  className={`flex shrink-0 items-center gap-1.5 px-2.5 py-1.5 text-sm rounded-full transition-colors ${
+                    mainView === view
+                      ? 'bg-skyhook-600 dark:bg-skyhook-500 text-white shadow-glow-brand-sm'
+                      : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-hover'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span className="hidden min-[1536px]:inline">{label}</span>
+                </button>
+              </Tooltip>
+            ))}
+          </div>
         </div>
 
         {/* Right: Controls */}
         <div className="flex items-center gap-3 shrink-0">
-          {/* Namespace selector with search. ArgoCD is global and reads from the admin cluster, so namespace scope is not applicable. */}
-          {mainView !== 'argocd' && (
+          {/* Namespace selector with search. ArgoCD and Data run their own scoped selectors, so namespace scope is not applicable. */}
+          {mainView !== 'argocd' && mainView !== 'data' && (
             <NamespaceSelector
               ref={namespaceSelectorRef}
               value={namespaces}
@@ -1362,6 +1357,11 @@ function AppInner() {
             namespaces={namespaces}
             onNavigateToResource={navigateToArgoDestinationResource}
           />
+        )}
+
+        {/* Data explorer */}
+        {mainView === 'data' && (
+          <MongoDataView />
         )}
 
         {/* Cost detail view */}
@@ -1735,15 +1735,18 @@ function GitHubStarButton() {
 // Theme toggle button component
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme()
+  const nextTheme = theme === 'light' ? 'dark' : theme === 'dark' ? 'violet glow' : 'light'
 
   return (
     <button
       onClick={toggleTheme}
       className="p-1.5 rounded-md bg-theme-elevated hover:bg-theme-hover text-theme-text-secondary hover:text-theme-text-primary transition-colors"
-      title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+      title={`Switch to ${nextTheme} theme`}
     >
       {theme === 'dark' ? (
         <Sun className="w-4 h-4" />
+      ) : theme === 'violet' ? (
+        <Sparkles className="w-4 h-4" />
       ) : (
         <Moon className="w-4 h-4" />
       )}

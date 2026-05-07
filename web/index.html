@@ -12,8 +12,9 @@
       (function() {
         var t = localStorage.getItem('radar-theme');
         if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-        if (t === 'dark') document.documentElement.classList.add('dark');
-        document.documentElement.style.colorScheme = t;
+        if (t === 'dark' || t === 'violet') document.documentElement.classList.add('dark');
+        if (t === 'violet') document.documentElement.classList.add('theme-violet');
+        document.documentElement.style.colorScheme = t === 'light' ? 'light' : 'dark';
       })();
     </script>
   </head>
