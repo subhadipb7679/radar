@@ -225,6 +225,14 @@ export interface RendererOverrides {
   ServiceRenderer?: React.ComponentType<{
     data: any; onCopy: CopyHandler; copied: string | null
   }>
+  NetworkPolicyRenderer?: React.ComponentType<{
+    data: any
+    onNavigate?: (ref: ResourceRef) => void
+  }>
+  IngressRenderer?: React.ComponentType<{
+    data: any
+    onNavigate?: (ref: ResourceRef) => void
+  }>
   WorkloadRenderer?: React.ComponentType<{
     kind: string; data: any
     onNavigate?: (ref: ResourceRef) => void
@@ -361,6 +369,8 @@ export function ResourceRendererDispatch({
   const WorkloadComp = rendererOverrides?.WorkloadRenderer ?? WorkloadRenderer
   const NodeComp = rendererOverrides?.NodeRenderer ?? NodeRenderer
   const ServiceComp = rendererOverrides?.ServiceRenderer ?? ServiceRenderer
+  const NetworkPolicyComp = rendererOverrides?.NetworkPolicyRenderer ?? NetworkPolicyRenderer
+  const IngressComp = rendererOverrides?.IngressRenderer ?? IngressRenderer
 
   const sidebarContent = showCommonSections && (
     <>
@@ -380,7 +390,7 @@ export function ResourceRendererDispatch({
         {['deployments', 'statefulsets', 'daemonsets'].includes(kind) && <WorkloadComp kind={kind} data={data} onNavigate={onNavigate} />}
         {kind === 'replicasets' && <ReplicaSetRenderer data={data} />}
         {kind === 'services' && !data?.apiVersion?.includes('serving.knative.dev') && <ServiceComp data={data} onCopy={onCopy} copied={copied} />}
-        {kind === 'ingresses' && !data?.apiVersion?.includes('networking.internal.knative.dev') && <IngressRenderer data={data} onNavigate={onNavigate} />}
+        {kind === 'ingresses' && !data?.apiVersion?.includes('networking.internal.knative.dev') && <IngressComp data={data} onNavigate={onNavigate} />}
         {kind === 'configmaps' && <ConfigMapRenderer data={data} />}
         {kind === 'secrets' && <SecretRenderer data={data} certificateInfo={certificateInfo} resourceData={data} onSaveSecretValue={onSaveSecretValue} isSaving={isSavingSecret} />}
         {kind === 'jobs' && <JobRenderer data={data} />}
@@ -406,7 +416,7 @@ export function ResourceRendererDispatch({
         {kind === 'tlsroutes' && <SimpleRouteRenderer data={data} kind="TLSRoute" onNavigate={onNavigate} />}
         {kind === 'sealedsecrets' && <SealedSecretRenderer data={data} onNavigate={onNavigate} />}
         {kind === 'workflowtemplates' && <WorkflowTemplateRenderer data={data} />}
-        {(kind === 'networkpolicies' || kind === 'networkpolicy') && <NetworkPolicyRenderer data={data} />}
+        {(kind === 'networkpolicies' || kind === 'networkpolicy') && <NetworkPolicyComp data={data} onNavigate={onNavigate} />}
         {(kind === 'ciliumnetworkpolicies' || kind === 'ciliumnetworkpolicy' || kind === 'ciliumclusterwidenetworkpolicies' || kind === 'ciliumclusterwidenetworkpolicy') && <CiliumNetworkPolicyRenderer data={data} />}
         {(kind === 'clusternetworkpolicies' || kind === 'clusternetworkpolicy') && <ClusterNetworkPolicyRenderer data={data} />}
         {kind === 'poddisruptionbudgets' && <PodDisruptionBudgetRenderer data={data} />}

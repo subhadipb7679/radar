@@ -6,6 +6,7 @@ import { TopologyPreview } from './TopologyPreview'
 import { HelmSummary } from './HelmSummary'
 import { ActivitySummary } from './ActivitySummary'
 import { TrafficSummary } from './TrafficSummary'
+import { IngressStatusPanel } from './IngressStatusPanel'
 import { CertificateHealthCard } from './CertificateHealthCard'
 import { NetworkPolicyCoverageCard } from './NetworkPolicyCoverageCard'
 import { CostCard } from './CostCard'
@@ -116,6 +117,7 @@ export function HomeView({ namespaces, topology, onNavigateToView, onNavigateToR
                 data={data.trafficSummary}
                 onNavigate={() => onNavigateToView('traffic')}
               />
+              <IngressStatusPanel onNavigateToResource={onNavigateToResource} />
               <CostCard onNavigate={() => onNavigateToView('cost')} />
             </div>
 

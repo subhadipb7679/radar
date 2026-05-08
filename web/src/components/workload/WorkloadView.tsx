@@ -32,6 +32,8 @@ import { useToast } from '../ui/Toast'
 import { PodRenderer } from '../resources/renderers/PodRenderer'
 import { NodeRenderer } from '../resources/renderers/NodeRenderer'
 import { ServiceRenderer } from '../resources/renderers/ServiceRenderer'
+import { IngressRenderer } from '../resources/renderers/IngressRenderer'
+import { NetworkPolicyRenderer } from '../resources/renderers/NetworkPolicyRenderer'
 import { WorkloadRenderer } from '../resources/renderers/WorkloadRenderer'
 import { CreateResourceDialog } from '../shared/CreateResourceDialog'
 import { cleanYamlForDuplicate } from '../../utils/skeleton-yaml'
@@ -40,7 +42,7 @@ type TabType = 'overview' | 'timeline' | 'logs' | 'metrics' | 'yaml'
 
 // Stable reference — web renderer wrappers inject platform hooks internally
 const rendererOverrides: RendererOverrides = {
-  PodRenderer, NodeRenderer, ServiceRenderer, WorkloadRenderer,
+  PodRenderer, NodeRenderer, ServiceRenderer, IngressRenderer, NetworkPolicyRenderer, WorkloadRenderer,
 }
 
 // ============================================================================

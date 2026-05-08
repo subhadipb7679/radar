@@ -353,14 +353,17 @@ export interface WorkloadCount {
 export interface DashboardMetrics {
   cpu?: MetricSummary
   memory?: MetricSummary
+  storage?: MetricSummary
 }
 
 export interface MetricSummary {
   usageMillis: number
   requestsMillis: number
   capacityMillis: number
+  availableMillis?: number
   usagePercent: number
   requestPercent: number
+  availablePercent?: number
 }
 
 export interface DashboardResourceCounts {

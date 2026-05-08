@@ -370,6 +370,9 @@ func (s *Server) setupRoutes() {
 			r.Get("/connection", s.handleConnectionStatus)
 			r.Post("/connection/retry", s.handleConnectionRetry)
 
+			// External URL checks
+			r.Get("/url/status", s.handleURLStatus)
+
 			// GitHub star status and action
 			r.Get("/github/starred", s.handleGitHubStarStatus)
 			r.Post("/github/star", s.handleGitHubStar)
@@ -407,6 +410,9 @@ func (s *Server) setupRoutes() {
 	if s.mcpHandler != nil {
 		r.Mount("/mcp", s.mcpHandler)
 	}
+
+	r.Handle("/webapp-proxy/{appID}", http.HandlerFunc(s.handleWebAppProxy))
+	r.Handle("/webapp-proxy/{appID}/*", http.HandlerFunc(s.handleWebAppProxy))
 
 	// Static files (frontend) - SPA fallback to index.html
 	if s.staticFS != nil {
@@ -2801,6 +2807,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		loaded.Theme = ""
 		loaded.PinnedKinds = nil
 		loaded.ResourceColumns = nil
+		loaded.WebApps = nil
 	}
 	s.writeJSON(w, loaded)
 }
@@ -2816,7 +2823,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// defense-in-depth check so a raw call that bypasses the intercept
 	// doesn't silently succeed and cause a cluster-shared settings.json
 	// to get mutated by one user.
-	if cloudMode() && (patch.Theme != "" || patch.PinnedKinds != nil || patch.ResourceColumns != nil) {
+	if cloudMode() && (patch.Theme != "" || patch.PinnedKinds != nil || patch.ResourceColumns != nil || patch.WebApps != nil) {
 		s.writeError(w, http.StatusBadRequest, "user preferences are managed by Radar Cloud; use /api/preferences instead")
 		return
 	}
@@ -2835,6 +2842,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 				current.ResourceColumns[key] = value
 			}
 		}
+		if patch.WebApps != nil {
+			current.WebApps = patch.WebApps
+		}
 	})
 	if err != nil {
 		log.Printf("[settings] Failed to save settings: %v", err)
@@ -2845,6 +2855,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		result.Theme = ""
 		result.PinnedKinds = nil
 		result.ResourceColumns = nil
+		result.WebApps = nil
 	}
 	s.writeJSON(w, result)
 }

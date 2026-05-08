@@ -4,7 +4,7 @@ import { HealthRing } from './HealthRing'
 import {
   AlertTriangle, CheckCircle, XCircle,
   Cpu, MemoryStick, Database, Container, Globe, Network as NetworkIcon, Briefcase, Clock,
-  ArrowRight, Server, Boxes, Shield, Radio, Info,
+  ArrowRight, Server, Boxes, Shield, Radio, Info, HardDrive,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { formatCPUMillicores, formatMemoryMiB } from '../../utils/format'
@@ -423,7 +423,28 @@ export function ClusterHealthCard({
                   />
                 </div>
               )}
-              {!metrics?.cpu && !metrics?.memory && (
+              {metrics?.storage && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-theme-text-tertiary">
+                    <HardDrive className="w-3.5 h-3.5 text-theme-text-tertiary" />
+                    Storage
+                  </div>
+                  <ResourceBar
+                    label="Available"
+                    used={formatMemoryMiB(metrics.storage.availableMillis ?? 0)}
+                    total={formatMemoryMiB(metrics.storage.capacityMillis)}
+                    percent={metrics.storage.availablePercent ?? 0}
+                    goodWhenHigh
+                  />
+                  <ResourceBar
+                    label="Requested"
+                    used={formatMemoryMiB(metrics.storage.requestsMillis)}
+                    total={formatMemoryMiB(metrics.storage.capacityMillis)}
+                    percent={metrics.storage.requestPercent}
+                  />
+                </div>
+              )}
+              {!metrics?.cpu && !metrics?.memory && !metrics?.storage && (
                 <MetricsUnavailableHint platform={cluster.platform} metricsServerAvailable={metricsServerAvailable} />
               )}
             </div>
@@ -532,13 +553,17 @@ function ResourceBar({
   used,
   total,
   percent,
+  goodWhenHigh = false,
 }: {
   label: string
   used: string
   total: string
   percent: number
+  goodWhenHigh?: boolean
 }) {
-  const barColor = percent > 85 ? 'bg-red-500' : percent > 60 ? 'bg-yellow-500' : 'bg-green-500'
+  const barColor = goodWhenHigh
+    ? percent < 15 ? 'bg-red-500' : percent < 40 ? 'bg-yellow-500' : 'bg-green-500'
+    : percent > 85 ? 'bg-red-500' : percent > 60 ? 'bg-yellow-500' : 'bg-green-500'
 
   return (
     <div>

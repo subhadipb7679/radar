@@ -18,6 +18,7 @@ import { TrafficView } from './components/traffic/TrafficView'
 import { CostView } from './components/cost/CostView'
 import { AuditView } from './components/audit/AuditView'
 import { MongoDataView } from './components/data/MongoDataView'
+import { WebAppView } from './components/webapps/WebAppView'
 import { HelmReleaseDrawer } from './components/helm/HelmReleaseDrawer'
 import { PortForwardProvider, PortForwardIndicator, PortForwardPanel } from './components/portforward/PortForwardManager'
 import { DockProvider, BottomDock, useDock, useOpenLocalTerminal } from './components/dock'
@@ -41,12 +42,13 @@ import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/con
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
 import radarLoadingIcon from '@skyhook-io/k8s-ui/assets/radar/radar-icon-loading.svg'
-import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Sparkles, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck, Database } from 'lucide-react'
+import { RefreshCw, Network, List, Clock, Package, Sun, Moon, Sparkles, Activity, Home, Star, Search, Bug, Settings, SquareTerminal, ShieldCheck, Database, Globe2 } from 'lucide-react'
 import { useTheme } from './context/ThemeContext'
 import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
 import { SettingsDialog } from './components/settings/SettingsDialog'
 import type { TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
+import type { CustomWebApp } from './types/webapps'
 import { kindToPlural, openExternal } from './utils/navigation'
 import { parseContextName } from './utils/context-name'
 import type { ContextSwitcherHandle } from './components/ContextSwitcher'
@@ -127,8 +129,8 @@ function ArgoIcon({ className }: { className?: string }) {
   )
 }
 
-// Extended MainView type that includes traffic, cost, ArgoCD, data, and special routes.
-type ExtendedMainView = MainView | 'traffic' | 'cost' | 'argocd' | 'workload' | 'audit' | 'data'
+// Extended MainView type that includes traffic, cost, ArgoCD, data, web apps, and special routes.
+type ExtendedMainView = MainView | 'traffic' | 'cost' | 'argocd' | 'workload' | 'audit' | 'data' | 'webapp'
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
@@ -144,6 +146,7 @@ function getViewFromPath(pathname: string): ExtendedMainView {
   if (path === 'workload') return 'workload'
   if (path === 'audit') return 'audit'
   if (path === 'data') return 'data'
+  if (path === 'webapp') return 'webapp'
   return 'home'
 }
 
@@ -192,6 +195,31 @@ function AppInner() {
   const capabilities = useCapabilitiesContext()
   const openLocalTerminal = useOpenLocalTerminal()
   const navCustomization = useNavCustomization()
+  const [customWebApps, setCustomWebApps] = useState<CustomWebApp[]>([])
+  const [selectedWebAppID, setSelectedWebAppID] = useState<string>(searchParams.get('app') ?? '')
+
+  const selectedWebApp = useMemo(() => {
+    return customWebApps.find(app => app.id === selectedWebAppID) ?? customWebApps[0] ?? null
+  }, [customWebApps, selectedWebAppID])
+
+  useEffect(() => {
+    fetch(apiUrl('/settings'), { credentials: getCredentialsMode(), headers: getAuthHeaders() })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => setCustomWebApps(data?.webApps ?? []))
+      .catch((err) => console.warn('[settings] Failed to load web apps:', err))
+  }, [])
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const next = (event as CustomEvent<CustomWebApp[]>).detail ?? []
+      setCustomWebApps(next)
+      if (selectedWebAppID && !next.some(app => app.id === selectedWebAppID)) {
+        setSelectedWebAppID(next[0]?.id ?? '')
+      }
+    }
+    window.addEventListener('radar-web-apps-updated', handler)
+    return () => window.removeEventListener('radar-web-apps-updated', handler)
+  }, [selectedWebAppID])
 
   // Auth check — detect if auth is enabled but user is not authenticated
   const { data: authMe, isPending: authMePending } = useAuthMe()
@@ -772,8 +800,10 @@ function AppInner() {
   // Sync state from URL when navigating (back/forward)
   useEffect(() => {
     const urlNamespaces = parseNamespacesFromURL(searchParams)
-
-    if (urlNamespaces.join(',') !== namespacesKey) setNamespaces(urlNamespaces)
+    const urlNamespacesKey = urlNamespaces.join(',')
+    setNamespaces((current) => current.join(',') === urlNamespacesKey ? current : urlNamespaces)
+    const appParam = searchParams.get('app') ?? ''
+    setSelectedWebAppID((current) => current === appParam ? current : appParam)
 
     // Restore helm release from URL (back navigation)
     const releaseParam = searchParams.get('release')
@@ -993,13 +1023,36 @@ function AppInner() {
                 </button>
               </Tooltip>
             ))}
+            {customWebApps.length > 0 && (
+              <>
+                <div className="mx-1 h-5 w-px shrink-0 bg-theme-border" />
+                {customWebApps.map((app) => (
+                  <Tooltip key={app.id} content={app.name} delay={100} position="bottom">
+                    <button
+                      onClick={() => {
+                        setSelectedWebAppID(app.id)
+                        setMainView('webapp', { app: app.id })
+                      }}
+                      className={`flex shrink-0 items-center gap-1.5 px-2.5 py-1.5 text-sm rounded-full transition-colors ${
+                        mainView === 'webapp' && selectedWebApp?.id === app.id
+                          ? 'bg-skyhook-600 dark:bg-skyhook-500 text-white shadow-glow-brand-sm'
+                          : 'text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-hover'
+                      }`}
+                    >
+                      <Globe2 className="w-4 h-4" style={{ color: mainView === 'webapp' && selectedWebApp?.id === app.id ? undefined : app.color }} />
+                      <span className="hidden min-[1536px]:inline">{app.name}</span>
+                    </button>
+                  </Tooltip>
+                ))}
+              </>
+            )}
           </div>
         </div>
 
         {/* Right: Controls */}
         <div className="flex items-center gap-3 shrink-0">
-          {/* Namespace selector with search. ArgoCD and Data run their own scoped selectors, so namespace scope is not applicable. */}
-          {mainView !== 'argocd' && mainView !== 'data' && (
+          {/* Namespace selector with search. ArgoCD, Data, and custom web apps don't use Radar's namespace scope. */}
+          {mainView !== 'argocd' && mainView !== 'data' && mainView !== 'webapp' && (
             <NamespaceSelector
               ref={namespaceSelectorRef}
               value={namespaces}
@@ -1362,6 +1415,11 @@ function AppInner() {
         {/* Data explorer */}
         {mainView === 'data' && (
           <MongoDataView />
+        )}
+
+        {/* Custom web app */}
+        {mainView === 'webapp' && (
+          <WebAppView app={selectedWebApp} />
         )}
 
         {/* Cost detail view */}

@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Settings, X, RotateCcw, Loader2, Copy, Check, Pin } from 'lucide-react'
+import { Settings, X, RotateCcw, Loader2, Copy, Check, Pin, Plus, Trash2, ExternalLink } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAnimatedUnmount } from '../../hooks/useAnimatedUnmount'
 import { TRANSITION_BACKDROP, TRANSITION_PANEL } from '../../utils/animation'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
+import type { CustomWebApp } from '../../types/webapps'
 
 interface Config {
   kubeconfig?: string
@@ -26,6 +27,10 @@ interface ConfigResponse {
   isDesktop: boolean
 }
 
+interface UserSettings {
+  webApps?: CustomWebApp[]
+}
+
 interface SettingsDialogProps {
   open: boolean
   onClose: () => void
@@ -39,6 +44,8 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const [saving, setSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [configDirty, setConfigDirty] = useState(false)
+  const [webApps, setWebApps] = useState<CustomWebApp[]>([])
+  const [webAppsDirty, setWebAppsDirty] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   // Load config on open
@@ -46,19 +53,25 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     if (!open) return
     setSaveMessage(null)
     setConfigDirty(false)
+    setWebAppsDirty(false)
     setLoadError(null)
 
-    fetch(apiUrl('/config'), { credentials: getCredentialsMode(), headers: getAuthHeaders() })
+    Promise.all([
+      fetch(apiUrl('/config'), { credentials: getCredentialsMode(), headers: getAuthHeaders() }),
+      fetch(apiUrl('/settings'), { credentials: getCredentialsMode(), headers: getAuthHeaders() }),
+    ])
       .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return res.json()
+        if (!res[0].ok) throw new Error(`config HTTP ${res[0].status}`)
+        if (!res[1].ok) throw new Error(`settings HTTP ${res[1].status}`)
+        return Promise.all([res[0].json(), res[1].json()])
       })
-      .then((data: ConfigResponse) => {
-        setConfigData(data)
-        setEditedConfig(data.file)
+      .then(([config, settings]: [ConfigResponse, UserSettings]) => {
+        setConfigData(config)
+        setEditedConfig(config.file)
+        setWebApps(settings.webApps ?? [])
       })
       .catch((err) => {
-        console.warn('[settings] Failed to load config:', err)
+        console.warn('[settings] Failed to load settings:', err)
         setLoadError('Failed to load configuration.')
       })
   }, [open])
@@ -89,29 +102,52 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     setSaveMessage(null)
   }, [])
 
+  const updateWebApps = useCallback((next: CustomWebApp[]) => {
+    setWebApps(next)
+    setWebAppsDirty(true)
+    setSaveMessage(null)
+  }, [])
+
   const saveConfig = useCallback(async () => {
     setSaving(true)
     setSaveMessage(null)
     try {
-      const res = await fetch(apiUrl('/config'), {
-        method: 'PUT',
-        credentials: getCredentialsMode(),
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify(editedConfig),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => null)
-        setSaveMessage(`Error: ${data?.error || res.statusText}`)
-      } else {
+      if (configDirty) {
+        const res = await fetch(apiUrl('/config'), {
+          method: 'PUT',
+          credentials: getCredentialsMode(),
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify(editedConfig),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => null)
+          setSaveMessage(`Error: ${data?.error || res.statusText}`)
+          return
+        }
         setConfigDirty(false)
-        setSaveMessage('Saved. Changes take effect on next launch.')
       }
+      if (webAppsDirty) {
+        const res = await fetch(apiUrl('/settings'), {
+          method: 'PUT',
+          credentials: getCredentialsMode(),
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ webApps }),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => null)
+          setSaveMessage(`Error: ${data?.error || res.statusText}`)
+          return
+        }
+        setWebAppsDirty(false)
+        window.dispatchEvent(new CustomEvent('radar-web-apps-updated', { detail: webApps }))
+      }
+      setSaveMessage(configDirty ? 'Saved. Restart may be required for startup settings.' : 'Saved.')
     } catch (err) {
       setSaveMessage(`Error: ${err}`)
     } finally {
       setSaving(false)
     }
-  }, [editedConfig])
+  }, [configDirty, editedConfig, webApps, webAppsDirty])
 
   const resetConfig = useCallback(() => {
     setEditedConfig({})
@@ -173,6 +209,8 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
             effectiveConfig={configData?.effective}
             isDesktop={isDesktop}
             onChange={updateConfigField}
+            webApps={webApps}
+            onWebAppsChange={updateWebApps}
           />
         </div>
 
@@ -199,7 +237,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
             </div>
             <button
               onClick={saveConfig}
-              disabled={saving || !configDirty}
+              disabled={saving || (!configDirty && !webAppsDirty)}
               className="flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium btn-brand rounded-md"
             >
               {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
@@ -219,11 +257,15 @@ function StartupConfigTab({
   effectiveConfig,
   isDesktop,
   onChange,
+  webApps,
+  onWebAppsChange,
 }: {
   config: Config
   effectiveConfig?: Config
   isDesktop: boolean
   onChange: <K extends keyof Config>(field: K, value: Config[K]) => void
+  webApps: CustomWebApp[]
+  onWebAppsChange: (apps: CustomWebApp[]) => void
 }) {
   return (
     <div className="space-y-4">
@@ -331,6 +373,8 @@ function StartupConfigTab({
             onChange={(v) => onChange('prometheusPortForwardOnStart', v ? true : undefined)}
           />
 
+          <WebAppsSection webApps={webApps} onChange={onWebAppsChange} />
+
           <MCPSection
             mcpEnabled={config.mcp ?? true}
             onToggle={(v) => onChange('mcp', v)}
@@ -340,6 +384,112 @@ function StartupConfigTab({
           />
         </div>
       </div>
+    </div>
+  )
+}
+
+function WebAppsSection({
+  webApps,
+  onChange,
+}: {
+  webApps: CustomWebApp[]
+  onChange: (apps: CustomWebApp[]) => void
+}) {
+  const addApp = () => {
+    onChange([
+      ...webApps,
+      {
+        id: crypto.randomUUID?.() ?? `webapp-${Date.now()}`,
+        name: 'Grafana',
+        url: '',
+        color: '#8b5cf6',
+      },
+    ])
+  }
+
+  const updateApp = (id: string, patch: Partial<CustomWebApp>) => {
+    onChange(webApps.map(app => app.id === id ? { ...app, ...patch } : app))
+  }
+
+  const removeApp = (id: string) => {
+    onChange(webApps.filter(app => app.id !== id))
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border border-theme-border bg-theme-base/40 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-theme-text-primary">Web apps</div>
+          <p className="text-xs text-theme-text-tertiary">
+            Add Grafana, Coroot, Kiali, or other HTTP apps to the top bar. Credentials are not stored here.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addApp}
+          className="inline-flex items-center gap-1.5 rounded-md bg-theme-elevated px-2.5 py-1.5 text-xs text-theme-text-secondary hover:bg-theme-hover hover:text-theme-text-primary"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Add
+        </button>
+      </div>
+
+      {webApps.length === 0 ? (
+        <div className="rounded-md border border-dashed border-theme-border p-3 text-xs text-theme-text-tertiary">
+          No custom web apps yet.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {webApps.map(app => (
+            <div key={app.id} className="space-y-2 rounded-md border border-theme-border bg-theme-surface p-3">
+              <div className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1.3fr)_36px] gap-2">
+                <input
+                  value={app.name}
+                  onChange={(e) => updateApp(app.id, { name: e.target.value })}
+                  placeholder="Name"
+                  className="min-w-0 rounded-md border border-theme-border bg-theme-elevated px-2.5 py-1.5 text-sm text-theme-text-primary"
+                />
+                <input
+                  value={app.url}
+                  onChange={(e) => updateApp(app.id, { url: e.target.value })}
+                  placeholder="https://grafana.example.com"
+                  className="min-w-0 rounded-md border border-theme-border bg-theme-elevated px-2.5 py-1.5 text-sm text-theme-text-primary"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeApp(app.id)}
+                  className="flex items-center justify-center rounded-md border border-theme-border text-theme-text-tertiary hover:bg-red-500/10 hover:text-red-400"
+                  title="Remove web app"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={app.color || '#8b5cf6'}
+                  onChange={(e) => updateApp(app.id, { color: e.target.value })}
+                  className="h-7 w-9 rounded border border-theme-border bg-theme-elevated"
+                  title="Icon color"
+                />
+                <span className="text-xs text-theme-text-tertiary">
+                  Apps that block embedding can still be opened externally.
+                </span>
+                {app.url && (
+                  <button
+                    type="button"
+                    onClick={() => window.open(app.url, '_blank')}
+                    className="ml-auto inline-flex items-center gap-1 text-xs text-accent-text hover:underline"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Test
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -21,6 +21,14 @@ type ResourceColumnSettings struct {
 	Widths  map[string]float64 `json:"widths,omitempty"`
 }
 
+// CustomWebApp is a user-added web application shown in the top navigation.
+type CustomWebApp struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	Color string `json:"color,omitempty"`
+}
+
 // AuditConfig holds cluster audit preferences.
 type AuditConfig struct {
 	IgnoredNamespaces []string `json:"ignoredNamespaces"`
@@ -39,6 +47,7 @@ type Settings struct {
 	Theme           string                            `json:"theme,omitempty"`
 	PinnedKinds     []PinnedKind                      `json:"pinnedKinds,omitempty"`
 	ResourceColumns map[string]ResourceColumnSettings `json:"resourceColumns,omitempty"`
+	WebApps         []CustomWebApp                    `json:"webApps,omitempty"`
 	Audit           *AuditConfig                      `json:"audit,omitempty"`
 }
 

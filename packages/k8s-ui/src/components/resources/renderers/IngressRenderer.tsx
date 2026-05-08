@@ -1,12 +1,24 @@
-import { Globe, Shield, Clock } from 'lucide-react'
+import { ExternalLink, Globe, Shield, Clock } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Section, PropertyList, Property, AlertBanner, ResourceLink } from '../../ui/drawer-components'
 
 interface IngressRendererProps {
   data: any
   onNavigate?: (ref: { kind: string; namespace: string; name: string }) => void
+  onOpenURL?: (url: string) => void
+  urlStatuses?: Record<string, IngressURLStatus | undefined>
 }
 
-export function IngressRenderer({ data, onNavigate }: IngressRendererProps) {
+export interface IngressURLStatus {
+  ok?: boolean
+  status?: string
+  statusCode?: number
+  latencyMs?: number
+  error?: string
+  loading?: boolean
+}
+
+export function IngressRenderer({ data, onNavigate, onOpenURL, urlStatuses }: IngressRendererProps) {
   const spec = data.spec || {}
   const rules = spec.rules || []
   const tls = spec.tls || []
@@ -52,14 +64,25 @@ export function IngressRenderer({ data, onNavigate }: IngressRendererProps) {
 
       <Section title="Rules" defaultExpanded>
         <div className="space-y-3">
-          {rules.map((rule: any, i: number) => (
+          {rules.map((rule: any, i: number) => {
+            const usesTLS = tls.some((t: any) => t.hosts?.includes(rule.host))
+            const hostURL = buildIngressURL(rule.host, usesTLS)
+            const urlStatus = hostURL ? urlStatuses?.[hostURL] : undefined
+            return (
             <div key={i} className="card-inner-lg">
               <div className="flex items-center gap-2 mb-2">
-                {tls.some((t: any) => t.hosts?.includes(rule.host)) && (
+                {usesTLS && (
                   <Shield className="w-3.5 h-3.5 text-green-400" />
                 )}
-                <span className="text-sm font-medium text-theme-text-primary">{rule.host || '*'}</span>
+                {hostURL ? (
+                  <ExternalURLLink url={hostURL} onOpenURL={onOpenURL} className="text-sm font-medium">
+                    {rule.host}
+                  </ExternalURLLink>
+                ) : (
+                  <span className="text-sm font-medium text-theme-text-primary">{rule.host || '*'}</span>
+                )}
               </div>
+              {hostURL && <IngressURLStatusBadge status={urlStatus} />}
               <div className="space-y-1">
                 {rule.http?.paths?.map((path: any) => (
                   <div key={path.path || '/'} className="text-xs text-theme-text-secondary flex items-center gap-2">
@@ -81,7 +104,7 @@ export function IngressRenderer({ data, onNavigate }: IngressRendererProps) {
                 ))}
               </div>
             </div>
-          ))}
+          )})}
         </div>
       </Section>
 
@@ -100,5 +123,78 @@ export function IngressRenderer({ data, onNavigate }: IngressRendererProps) {
         </Section>
       )}
     </>
+  )
+}
+
+export function buildIngressURL(host: string | undefined, usesTLS: boolean, path = '/'): string | null {
+  if (!host || host === '*') return null
+  const normalizedPath = path?.startsWith('/') ? path : `/${path || ''}`
+  return `${usesTLS ? 'https' : 'http'}://${host}${normalizedPath === '/' ? '' : normalizedPath}`
+}
+
+function IngressURLStatusBadge({ status }: { status?: IngressURLStatus }) {
+  if (!status) return null
+  if (status.loading) {
+    return (
+      <div className="mb-2 flex items-center gap-1.5 text-[11px] text-theme-text-tertiary">
+        <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+        Checking live status...
+      </div>
+    )
+  }
+
+  const ok = status.ok === true
+  return (
+    <div className={`mb-2 flex items-center gap-1.5 text-[11px] ${ok ? 'text-green-400' : 'text-red-400'}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${ok ? 'bg-green-400' : 'bg-red-400'}`} />
+      <span>{ok ? 'Reachable' : 'Unreachable'}</span>
+      {status.status && <span className="text-theme-text-tertiary">({status.status})</span>}
+      {status.latencyMs != null && <span className="text-theme-text-tertiary">{status.latencyMs}ms</span>}
+      {!ok && status.error && <span className="truncate text-theme-text-tertiary" title={status.error}>{status.error}</span>}
+    </div>
+  )
+}
+
+function ExternalURLLink({
+  url,
+  onOpenURL,
+  className,
+  children,
+}: {
+  url: string
+  onOpenURL?: (url: string) => void
+  className?: string
+  children: ReactNode
+}) {
+  const content = (
+    <>
+      <span className="truncate">{children}</span>
+      <ExternalLink className="w-3 h-3 shrink-0 opacity-70" />
+    </>
+  )
+
+  if (onOpenURL) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenURL(url)}
+        title={`Open ${url}`}
+        className={`inline-flex max-w-full items-center gap-1 text-left text-blue-400 hover:text-blue-300 hover:underline ${className ?? ''}`}
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      title={`Open ${url}`}
+      className={`inline-flex max-w-full items-center gap-1 text-blue-400 hover:text-blue-300 hover:underline ${className ?? ''}`}
+    >
+      {content}
+    </a>
   )
 }

@@ -14,37 +14,37 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/helm"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/timeline"
-	topology "github.com/skyhook-io/radar/pkg/topology"
 	"github.com/skyhook-io/radar/internal/traffic"
+	topology "github.com/skyhook-io/radar/pkg/topology"
 )
 
 // DashboardResponse is the aggregated response for the home dashboard
 type DashboardResponse struct {
-	Cluster                DashboardCluster            `json:"cluster"`
-	Health                 DashboardHealth             `json:"health"`
-	Problems               []DashboardProblem          `json:"problems"`
-	ResourceCounts         DashboardResourceCounts     `json:"resourceCounts"`
-	RecentEvents           []DashboardEvent            `json:"recentEvents"`
-	RecentChanges          []DashboardChange           `json:"recentChanges"`
-	TopologySummary        DashboardTopologySummary    `json:"topologySummary"`
-	TrafficSummary         *DashboardTrafficSummary    `json:"trafficSummary"`
-	Metrics                *DashboardMetrics           `json:"metrics"`
-	MetricsServerAvailable bool                        `json:"metricsServerAvailable"`
+	Cluster                DashboardCluster                `json:"cluster"`
+	Health                 DashboardHealth                 `json:"health"`
+	Problems               []DashboardProblem              `json:"problems"`
+	ResourceCounts         DashboardResourceCounts         `json:"resourceCounts"`
+	RecentEvents           []DashboardEvent                `json:"recentEvents"`
+	RecentChanges          []DashboardChange               `json:"recentChanges"`
+	TopologySummary        DashboardTopologySummary        `json:"topologySummary"`
+	TrafficSummary         *DashboardTrafficSummary        `json:"trafficSummary"`
+	Metrics                *DashboardMetrics               `json:"metrics"`
+	MetricsServerAvailable bool                            `json:"metricsServerAvailable"`
 	CertificateHealth      *DashboardCertificateHealth     `json:"certificateHealth,omitempty"`
 	NetworkPolicyCoverage  *DashboardNetworkPolicyCoverage `json:"networkPolicyCoverage,omitempty"`
-	NodeVersionSkew        *k8s.VersionSkew            `json:"nodeVersionSkew,omitempty"`
-	Audit          *DashboardAudit      `json:"audit,omitempty"`
-	DeferredLoading        bool                        `json:"deferredLoading,omitempty"`  // True while deferred informers (secrets, events, etc.) are still syncing
-	PartialData            []string                    `json:"partialData,omitempty"`      // Resource kinds that timed out during critical sync (e.g. ["Pod", "Deployment"])
-	AccessRestricted       bool                        `json:"accessRestricted,omitempty"` // True when user has no namespace access (RBAC)
+	NodeVersionSkew        *k8s.VersionSkew                `json:"nodeVersionSkew,omitempty"`
+	Audit                  *DashboardAudit                 `json:"audit,omitempty"`
+	DeferredLoading        bool                            `json:"deferredLoading,omitempty"`  // True while deferred informers (secrets, events, etc.) are still syncing
+	PartialData            []string                        `json:"partialData,omitempty"`      // Resource kinds that timed out during critical sync (e.g. ["Pod", "Deployment"])
+	AccessRestricted       bool                            `json:"accessRestricted,omitempty"` // True when user has no namespace access (RBAC)
 }
 
 // DashboardCRDsResponse is the response for CRD counts (loaded lazily)
@@ -70,14 +70,14 @@ type DashboardProblem struct {
 	Kind            string `json:"kind"`
 	Namespace       string `json:"namespace"`
 	Name            string `json:"name"`
-	Group           string `json:"group,omitempty"`  // API group for CRD disambiguation (e.g., "cluster.x-k8s.io")
-	Severity        string `json:"severity"`         // "critical", "high", or "medium"
+	Group           string `json:"group,omitempty"` // API group for CRD disambiguation (e.g., "cluster.x-k8s.io")
+	Severity        string `json:"severity"`        // "critical", "high", or "medium"
 	Reason          string `json:"reason"`
 	Message         string `json:"message"`
 	Age             string `json:"age"`
-	AgeSeconds      int64  `json:"ageSeconds"`       // For sorting: lower = more recent
-	Duration        string `json:"duration"`          // How long the problem has persisted
-	DurationSeconds int64  `json:"durationSeconds"`   // For sorting by problem age
+	AgeSeconds      int64  `json:"ageSeconds"`         // For sorting: lower = more recent
+	Duration        string `json:"duration"`           // How long the problem has persisted
+	DurationSeconds int64  `json:"durationSeconds"`    // For sorting by problem age
 	PodCount        int    `json:"podCount,omitempty"` // For workload rollups: number of affected pods
 }
 
@@ -97,7 +97,7 @@ type DashboardResourceCounts struct {
 	PVCs         PVCCount      `json:"pvcs"`
 	Gateways     int           `json:"gateways"`
 	Routes       int           `json:"routes"`
-	Restricted []string `json:"restricted,omitempty"` // Resource kinds the user cannot list
+	Restricted   []string      `json:"restricted,omitempty"` // Resource kinds the user cannot list
 }
 
 type WorkloadCount struct {
@@ -107,16 +107,19 @@ type WorkloadCount struct {
 }
 
 type DashboardMetrics struct {
-	CPU    *MetricSummary `json:"cpu,omitempty"`
-	Memory *MetricSummary `json:"memory,omitempty"`
+	CPU     *MetricSummary `json:"cpu,omitempty"`
+	Memory  *MetricSummary `json:"memory,omitempty"`
+	Storage *MetricSummary `json:"storage,omitempty"`
 }
 
 type MetricSummary struct {
-	UsageMillis    int64 `json:"usageMillis"`
-	RequestsMillis int64 `json:"requestsMillis"`
-	CapacityMillis int64 `json:"capacityMillis"`
-	UsagePercent   int   `json:"usagePercent"`
-	RequestPercent int   `json:"requestPercent"`
+	UsageMillis      int64 `json:"usageMillis"`
+	RequestsMillis   int64 `json:"requestsMillis"`
+	CapacityMillis   int64 `json:"capacityMillis"`
+	AvailableMillis  int64 `json:"availableMillis,omitempty"`
+	UsagePercent     int   `json:"usagePercent"`
+	RequestPercent   int   `json:"requestPercent"`
+	AvailablePercent int   `json:"availablePercent,omitempty"`
 }
 
 type ResourceCount struct {
@@ -419,11 +422,16 @@ func (s *Server) getDashboardHealth(cache *k8s.ResourceCache, namespace string) 
 		sort.Strings(reasonParts)
 
 		problems = append(problems, DashboardProblem{
-			Kind:            key.kind,
-			Namespace:       key.namespace,
-			Name:            key.name,
-			Severity:        g.severity,
-			Reason:          fmt.Sprintf("%d %s unhealthy", g.podCount, func() string { if g.podCount == 1 { return "pod" }; return "pods" }()),
+			Kind:      key.kind,
+			Namespace: key.namespace,
+			Name:      key.name,
+			Severity:  g.severity,
+			Reason: fmt.Sprintf("%d %s unhealthy", g.podCount, func() string {
+				if g.podCount == 1 {
+					return "pod"
+				}
+				return "pods"
+			}()),
 			Message:         k8s.Truncate(strings.Join(reasonParts, ", "), 200),
 			Age:             k8s.FormatAge(g.newestAge),
 			AgeSeconds:      int64(g.newestAge.Seconds()),
@@ -571,11 +579,11 @@ func podProblemDuration(pod *corev1.Pod, now time.Time) time.Duration {
 
 type ownerKey struct{ kind, namespace, name string }
 type ownerGroup struct {
-	podCount   int
-	severity   string
-	reasons    map[string]int
-	newestDur  time.Duration
-	newestAge  time.Duration
+	podCount  int
+	severity  string
+	reasons   map[string]int
+	newestDur time.Duration
+	newestAge time.Duration
 }
 
 // collectPodForRollup groups a problematic pod under its owner workload, or adds it as an orphan.
@@ -1307,6 +1315,35 @@ func (s *Server) getDashboardMetrics(ctx context.Context) *DashboardMetrics {
 		}
 	}
 
+	// Sum persistent storage capacity from PVs and requested storage from PVCs.
+	// This is capacity planning data, not byte-level filesystem usage; actual
+	// volume bytes-used needs kubelet volume stats or Prometheus/cAdvisor.
+	// "Available" is shown as total provisioned PV capacity minus requested PVC
+	// storage. Counting only unbound PVs is technically precise but misleading
+	// for dynamic provisioners and fully-bound clusters, where it often reads 0.
+	var storageRequestsBytes int64
+	var storageCapacityBytes int64
+	if pvcLister := cache.PersistentVolumeClaims(); pvcLister != nil {
+		pvcs, _ := pvcLister.List(labels.Everything())
+		for _, pvc := range pvcs {
+			if requested, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+				storageRequestsBytes += requested.Value()
+			}
+		}
+	}
+	if pvLister := cache.PersistentVolumes(); pvLister != nil {
+		pvs, _ := pvLister.List(labels.Everything())
+		for _, pv := range pvs {
+			if capacity, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok {
+				storageCapacityBytes += capacity.Value()
+			}
+		}
+	}
+	storageAvailableBytes := storageCapacityBytes - storageRequestsBytes
+	if storageAvailableBytes < 0 {
+		storageAvailableBytes = 0
+	}
+
 	metrics := &DashboardMetrics{}
 	if cpuCapacityMillis > 0 {
 		metrics.CPU = &MetricSummary{
@@ -1330,6 +1367,27 @@ func (s *Server) getDashboardMetrics(ctx context.Context) *DashboardMetrics {
 			RequestPercent: int(memRequestsMiB * 100 / memCapacityMiB),
 		}
 	}
+	if storageRequestsBytes > 0 || storageCapacityBytes > 0 {
+		storageRequestsMiB := storageRequestsBytes / (1024 * 1024)
+		storageCapacityMiB := storageCapacityBytes / (1024 * 1024)
+		storageAvailableMiB := storageAvailableBytes / (1024 * 1024)
+		if storageCapacityMiB == 0 {
+			storageCapacityMiB = storageRequestsMiB
+		}
+		requestPercent := 0
+		availablePercent := 0
+		if storageCapacityMiB > 0 {
+			requestPercent = int(storageRequestsMiB * 100 / storageCapacityMiB)
+			availablePercent = int(storageAvailableMiB * 100 / storageCapacityMiB)
+		}
+		metrics.Storage = &MetricSummary{
+			RequestsMillis:   storageRequestsMiB,
+			CapacityMillis:   storageCapacityMiB,
+			AvailableMillis:  storageAvailableMiB,
+			RequestPercent:   requestPercent,
+			AvailablePercent: availablePercent,
+		}
+	}
 
 	return metrics
 }
@@ -1341,7 +1399,6 @@ func parseCPUToMillis(s string) int64 { return k8s.ParseCPUToMillis(s) }
 func parseMemoryToBytes(s string) int64 { return k8s.ParseMemoryToBytes(s) }
 
 // Helper functions
-
 
 // getDashboardCRDCounts returns counts of CRD instances in the cluster.
 func (s *Server) getDashboardCRDCounts(_ context.Context, namespace string) []DashboardCRDCount {
@@ -1594,9 +1651,9 @@ func (s *Server) getDashboardNetworkPolicyCoverage(cache *k8s.ResourceCache, nam
 
 // DashboardAudit is the audit summary in the dashboard response.
 type DashboardAudit struct {
-	Passing    int                                `json:"passing"`
-	Warning    int                                `json:"warning"`
-	Danger     int                                `json:"danger"`
+	Passing    int                                 `json:"passing"`
+	Warning    int                                 `json:"warning"`
+	Danger     int                                 `json:"danger"`
 	Categories map[string]DashboardCategorySummary `json:"categories"`
 }
 
@@ -1627,4 +1684,3 @@ func getDashboardAudit(cache *k8s.ResourceCache, namespaces []string) *Dashboard
 		Categories: cats,
 	}
 }
-
