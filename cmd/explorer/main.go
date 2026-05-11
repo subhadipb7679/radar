@@ -57,6 +57,7 @@ func main() {
 	// Timeline storage options
 	timelineStorage := flag.String("timeline-storage", fileCfg.TimelineStorageOr("memory"), "Timeline storage backend: memory or sqlite")
 	timelineDBPath := flag.String("timeline-db", fileCfg.TimelineDBPath, "Path to timeline database file (default: ~/.radar/timeline.db)")
+	timelineRetention := flag.Duration("timeline-retention", fileCfg.TimelineRetentionOr(7*24*time.Hour), "How long to retain timeline events when --timeline-storage=sqlite (e.g. 168h, 720h). 0 disables cleanup (unbounded growth).")
 	// Traffic/metrics options
 	prometheusURL := flag.String("prometheus-url", fileCfg.PrometheusURL, "Manual Prometheus/VictoriaMetrics URL (skips auto-discovery)")
 	prometheusPortForwardOnStart := flag.Bool("prometheus-port-forward-on-start", fileCfg.PrometheusPortForwardOnStart, "Start port-forward to monitoring/prometheus-server after connecting to the selected cluster")
@@ -157,6 +158,7 @@ func main() {
 		PodShellDefault:              *podShellDefault,
 		TimelineStorage:              *timelineStorage,
 		TimelineDBPath:               *timelineDBPath,
+		TimelineRetention:            *timelineRetention,
 		PrometheusURL:                *prometheusURL,
 		PrometheusPortForwardOnStart: *prometheusPortForwardOnStart,
 		MCPEnabled:                   !*noMCP,

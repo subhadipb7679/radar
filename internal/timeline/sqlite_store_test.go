@@ -455,3 +455,213 @@ func TestSQLiteStore_LabelsStorage(t *testing.T) {
 		t.Errorf("Expected GetAppLabel()='myapp', got '%s'", result.GetAppLabel())
 	}
 }
+
+func TestSQLiteStore_SeenResources_PersistAcrossRestart(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "timeline-seen-persist-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "seen.db")
+
+	store1, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	store1.MarkResourceSeen("Pod", "default", "p1")
+	store1.MarkResourceSeen("Deployment", "kube-system", "d1")
+	store1.Close()
+
+	store2, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer store2.Close()
+
+	if !store2.IsResourceSeen("Pod", "default", "p1") {
+		t.Error("expected Pod default/p1 to be seen after restart")
+	}
+	if !store2.IsResourceSeen("Deployment", "kube-system", "d1") {
+		t.Error("expected Deployment kube-system/d1 to be seen after restart")
+	}
+	if store2.IsResourceSeen("Pod", "default", "never-marked") {
+		t.Error("did not expect unmarked resource to be seen")
+	}
+}
+
+func TestSQLiteStore_Stats_RecordsCleanupState(t *testing.T) {
+	store, cleanup := createTestSQLiteStore(t)
+	defer cleanup()
+
+	if got := store.Stats(); !got.LastCleanupAt.IsZero() || got.RetentionAge != 0 {
+		t.Errorf("expected zero cleanup state before StartCleanupLoop, got %+v", got)
+	}
+
+	ctx := context.Background()
+	old := TimelineEvent{
+		ID:        "old",
+		Timestamp: time.Now().Add(-2 * time.Hour),
+		Source:    SourceInformer,
+		Kind:      "Pod",
+		Namespace: "default",
+		Name:      "old-pod",
+		EventType: EventTypeAdd,
+	}
+	if err := store.Append(ctx, old); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	store.StartCleanupLoop(time.Hour, time.Hour)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stats := store.Stats()
+		if !stats.LastCleanupAt.IsZero() {
+			if stats.RetentionAge != time.Hour {
+				t.Errorf("RetentionAge = %s, want 1h", stats.RetentionAge)
+			}
+			if stats.LastCleanupDeletedRows != 1 {
+				t.Errorf("LastCleanupDeletedRows = %d, want 1", stats.LastCleanupDeletedRows)
+			}
+			if stats.LastCleanupError != "" {
+				t.Errorf("LastCleanupError = %q, want empty", stats.LastCleanupError)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("LastCleanupAt remained zero — cleanup state not recorded")
+}
+
+func TestSQLiteStore_StartCleanupLoop_RunsImmediately(t *testing.T) {
+	// Use an interval far longer than the test window so the only way
+	// the old event can be deleted within the deadline is the eager
+	// pre-ticker run. Catches a regression where someone moves the
+	// runCleanup call back inside the for-loop / below the case branch.
+	store, cleanup := createTestSQLiteStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	old := TimelineEvent{
+		ID:        "old",
+		Timestamp: time.Now().Add(-2 * time.Hour),
+		Source:    SourceInformer,
+		Kind:      "Pod",
+		Namespace: "default",
+		Name:      "old-pod",
+		EventType: EventTypeAdd,
+	}
+	if err := store.Append(ctx, old); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	store.StartCleanupLoop(time.Hour, time.Hour)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := store.Query(ctx, QueryOptions{Limit: 10, IncludeManaged: true})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if len(events) == 0 {
+			return // eager cleanup ran
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("eager cleanup did not run within 2s — old event still present")
+}
+
+func TestSQLiteStore_StartCleanupLoop_RunsAndStopsOnClose(t *testing.T) {
+	store, cleanup := createTestSQLiteStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	old := TimelineEvent{
+		ID:        "old",
+		Timestamp: time.Now().Add(-2 * time.Hour),
+		Source:    SourceInformer,
+		Kind:      "Pod",
+		Namespace: "default",
+		Name:      "old-pod",
+		EventType: EventTypeAdd,
+	}
+	fresh := TimelineEvent{
+		ID:        "fresh",
+		Timestamp: time.Now(),
+		Source:    SourceInformer,
+		Kind:      "Pod",
+		Namespace: "default",
+		Name:      "fresh-pod",
+		EventType: EventTypeAdd,
+	}
+	if err := store.AppendBatch(ctx, []TimelineEvent{old, fresh}); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+
+	store.StartCleanupLoop(time.Hour, 20*time.Millisecond)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := store.Query(ctx, QueryOptions{Limit: 10, IncludeManaged: true})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if len(events) == 1 && events[0].ID == "fresh" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	events, _ := store.Query(ctx, QueryOptions{Limit: 10, IncludeManaged: true})
+	if len(events) != 1 || events[0].ID != "fresh" {
+		t.Fatalf("expected only the fresh event after cleanup, got %d: %+v", len(events), events)
+	}
+
+	// Close must return promptly — proves the cleanup goroutine exited.
+	done := make(chan error, 1)
+	go func() { done <- store.Close() }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return within 2s — cleanup goroutine leaked")
+	}
+
+	// And idempotent — the deferred cleanup() will Close again.
+}
+
+func TestSQLiteStore_StartCleanupLoop_ZeroIsNoop(t *testing.T) {
+	cases := []struct {
+		name      string
+		retention time.Duration
+		interval  time.Duration
+	}{
+		{"zero retention", 0, time.Hour},
+		{"zero interval", time.Hour, 0},
+		{"both zero", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir, err := os.MkdirTemp("", "timeline-noop-*")
+			if err != nil {
+				t.Fatalf("MkdirTemp: %v", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			store, err := NewSQLiteStore(filepath.Join(tmpDir, "test.db"))
+			if err != nil {
+				t.Fatalf("NewSQLiteStore: %v", err)
+			}
+
+			store.StartCleanupLoop(tc.retention, tc.interval)
+
+			done := make(chan error, 1)
+			go func() { done <- store.Close() }()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("Close blocked — goroutine started despite zero param")
+			}
+		})
+	}
+}

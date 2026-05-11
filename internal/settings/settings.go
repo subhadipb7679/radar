@@ -49,6 +49,11 @@ type Settings struct {
 	ResourceColumns map[string]ResourceColumnSettings `json:"resourceColumns,omitempty"`
 	WebApps         []CustomWebApp                    `json:"webApps,omitempty"`
 	Audit           *AuditConfig                      `json:"audit,omitempty"`
+	// ActiveNamespaces maps kubeconfig context name → the user's namespace
+	// picks (the in-app multi-select switcher's last selection per cluster).
+	// Empty slice (or missing key) means no pick is active and reads default
+	// to the user's full RBAC ceiling (typically "All namespaces").
+	ActiveNamespaces map[string][]string `json:"activeNamespaces,omitempty"`
 }
 
 // mu serializes Load-mutate-Save cycles to prevent concurrent PUTs from

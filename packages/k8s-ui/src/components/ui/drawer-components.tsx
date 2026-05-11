@@ -519,7 +519,7 @@ export function PodTemplateSection({ template }: { template: any }) {
           <div className="text-xs text-theme-text-secondary truncate" title={c.image}>{c.image}</div>
           {c.ports && (
             <div className="text-xs text-theme-text-tertiary mt-1">
-              Ports: {c.ports.map((p: any) => `${p.containerPort}/${p.protocol || 'TCP'}`).join(', ')}
+              Ports: {c.ports.map((p: any) => `${p.name ? `${p.name}: ` : ''}${p.containerPort}/${p.protocol || 'TCP'}`).join(', ')}
             </div>
           )}
         </div>

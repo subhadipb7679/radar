@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { useRefreshAnimation } from './hooks/useRefreshAnimation'
 import { startViewTransitionSafe } from '@skyhook-io/k8s-ui/utils/view-transition'
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
+import { useNavigate, useLocation, useSearchParams, useNavigationType, NavigationType } from 'react-router-dom'
 import { HomeView } from './components/home/HomeView'
 import { DebugOverlay } from './components/DebugOverlay'
 import { TopologyGraph, TopologyFilterSidebar, TopologyControls } from '@skyhook-io/k8s-ui'
@@ -24,6 +24,7 @@ import { PortForwardProvider, PortForwardIndicator, PortForwardPanel } from './c
 import { DockProvider, BottomDock, useDock, useOpenLocalTerminal } from './components/dock'
 import { DURATION_DOCK } from '@skyhook-io/k8s-ui/utils/animation'
 import { ContextSwitcher } from './components/ContextSwitcher'
+import { NamespaceSwitcher, type NamespaceSwitcherHandle } from './components/NamespaceSwitcher'
 import { useNavCustomization } from './context/NavCustomization'
 import { ContextSwitchProvider, useContextSwitch } from './context/ContextSwitchContext'
 import { ConnectionProvider, useConnection } from './context/ConnectionContext'
@@ -31,13 +32,12 @@ import { ConnectionErrorView } from './components/ConnectionErrorView'
 import { CapabilitiesProvider, useCapabilitiesContext } from './contexts/CapabilitiesContext'
 import { UserMenu } from './components/UserMenu'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
-import { NamespaceSelector, type NamespaceSelectorHandle } from './components/ui/NamespaceSelector'
 import { UpdateNotification } from './components/ui/UpdateNotification'
 import { ShortcutHelpOverlay } from './components/ui/ShortcutHelpOverlay'
 import { CommandPalette } from './components/ui/CommandPalette'
 import { DiagnosticsOverlay } from './components/ui/DiagnosticsOverlay'
 import { useEventSource } from './hooks/useEventSource'
-import { useNamespaces, useSwitchContext, useAuthMe } from './api/client'
+import { useNamespaces, useNamespaceScope, useSetActiveNamespace, useSwitchContext, useAuthMe } from './api/client'
 import { routePath, apiUrl, getAuthHeaders, getCredentialsMode } from './api/config'
 import { KeyboardShortcutProvider, useRegisterShortcut, useRegisterShortcuts } from './hooks/useKeyboardShortcuts'
 import { useAnimatedUnmount } from './hooks/useAnimatedUnmount'
@@ -191,6 +191,7 @@ function AuthBarrier({ authMode }: { authMode: string }) {
 function AppInner() {
   const navigate = useNavigate()
   const location = useLocation()
+  const navigationType = useNavigationType()
   const [searchParams, setSearchParams] = useSearchParams()
   const capabilities = useCapabilitiesContext()
   const openLocalTerminal = useOpenLocalTerminal()
@@ -434,7 +435,7 @@ function AppInner() {
   const pendingCrossContextResourceRef = useRef<SelectedResource | null>(null)
 
   // Refs for dropdown components to trigger them via shortcuts
-  const namespaceSelectorRef = useRef<NamespaceSelectorHandle>(null)
+  const namespaceSwitcherRef = useRef<NamespaceSwitcherHandle>(null)
   const contextSwitcherRef = useRef<ContextSwitcherHandle>(null)
 
   // View switching keyboard shortcuts
@@ -454,7 +455,7 @@ function AppInner() {
       description: 'Switch namespace',
       category: 'Navigation' as const,
       scope: 'global' as const,
-      handler: () => namespaceSelectorRef.current?.open(),
+      handler: () => namespaceSwitcherRef.current?.open(),
     },
     {
       id: 'switch-context',
@@ -534,7 +535,12 @@ function AppInner() {
   const hideGroupHeader = namespaces.length === 1 && effectiveGroupingMode === 'namespace'
 
   // Fetch available namespaces
-  const { data: availableNamespaces, error: namespacesError } = useNamespaces()
+  const { data: availableNamespaces } = useNamespaces()
+
+  // Per-user view filter served by the backend. Loaded eagerly so the
+  // picker can render its current state without showing the multi-select
+  // fallback during the initial scope fetch.
+  const { data: namespaceScope } = useNamespaceScope()
 
   // Context switch state
   const { isSwitching, targetContext, progressMessage, startSwitch, updateProgress, endSwitch } = useContextSwitch()
@@ -757,6 +763,39 @@ function AppInner() {
   // Serialize namespaces for stable dependency tracking
   const namespacesKey = namespaces.join(',')
 
+  // The server is canonical for the per-user namespace pick. Mirror its
+  // `actives` into App.tsx state so consumer hooks (SSE, dashboard, resource
+  // lists) stay in lockstep with the picker. The dedicated URL-write effect
+  // below propagates the mirrored state to `?namespaces=`.
+  const setActiveNamespace = useSetActiveNamespace()
+  const initialBookmarkReconciledRef = useRef(false)
+  const scopeActives = useMemo(() => namespaceScope?.actives ?? [], [namespaceScope?.actives])
+  const namespaceScopeKey = useMemo(() => namespaceScope ? [...scopeActives].sort().join(',') : null, [namespaceScope, scopeActives])
+  useEffect(() => {
+    if (!namespaceScope) return
+    const sortedScope = [...scopeActives].sort()
+    const sortedState = [...namespaces].sort()
+    const sameAsState = sortedScope.length === sortedState.length && sortedScope.every((ns, i) => ns === sortedState[i])
+
+    // First-load bookmark reconciliation: if the URL had namespaces that
+    // differ from the server pick when the scope first arrives, push the
+    // URL choice to the server so shared/bookmarked deep links keep
+    // working. The ref flips on the first scope load regardless of whether
+    // the URL had namespaces — subsequent runs mirror server → state.
+    if (!initialBookmarkReconciledRef.current) {
+      initialBookmarkReconciledRef.current = true
+      if (!sameAsState && sortedState.length > 0) {
+        setActiveNamespace.mutate({ namespaces: sortedState })
+        return
+      }
+    }
+
+    if (!sameAsState) {
+      setNamespaces(scopeActives)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- namespaces and setActiveNamespace are intentionally excluded; we only react to server-side changes.
+  }, [namespaceScope, namespaceScopeKey])
+
   // Update URL query params when state changes (path is handled by setMainView)
   // Read from window.location.search (not React Router's searchParams) to preserve
   // params set by child components via window.history.replaceState (e.g., kind from ResourcesView).
@@ -797,11 +836,25 @@ function AppInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- reads window.location.search, not searchParams
   }, [namespacesKey, topologyMode, groupingMode, mainView, setSearchParams])
 
-  // Sync state from URL when navigating (back/forward)
+  // Sync state from URL when navigating (back/forward). Push the URL choice
+  // to the server too so the canonical pick stays in lockstep — otherwise a
+  // back-nav would visually update but leave the next reload pulling the
+  // server's previous (forward-nav) pick.
   useEffect(() => {
     const urlNamespaces = parseNamespacesFromURL(searchParams)
-    const urlNamespacesKey = urlNamespaces.join(',')
-    setNamespaces((current) => current.join(',') === urlNamespacesKey ? current : urlNamespaces)
+
+    if (urlNamespaces.join(',') !== namespacesKey) {
+      setNamespaces(urlNamespaces)
+      if (namespaceScope) {
+        const sortedURL = [...urlNamespaces].sort()
+        const sortedScope = [...(namespaceScope.actives ?? [])].sort()
+        const same = sortedURL.length === sortedScope.length && sortedURL.every((ns, i) => ns === sortedScope[i])
+        if (!same) {
+          setActiveNamespace.mutate({ namespaces: urlNamespaces })
+        }
+      }
+    }
+
     const appParam = searchParams.get('app') ?? ''
     setSelectedWebAppID((current) => current === appParam ? current : appParam)
 
@@ -815,7 +868,36 @@ function AppInner() {
         setSelectedHelmRelease({ namespace: ns, name, storageNamespace: searchParams.get('releaseStorage') || undefined })
       }
     }
-  }, [searchParams])
+
+    // Restore resource drawer selection from URL on browser back/forward (POP) within
+    // /resources/{kind}. Cross-kind POP re-mounts ResourcesView via key={pathname} so its
+    // mount effect re-reads ?resource=; same-kind POP doesn't remount, so App must
+    // reconcile selectedResource here. Limited to POP to avoid clobbering deliberate
+    // setSelectedResource calls that race the URL writer (e.g. helm/audit -> resources).
+    if (navigationType === NavigationType.Pop && mainView === 'resources') {
+      const kindFromPath = location.pathname.match(/^\/resources\/([^/]+)/)?.[1] ?? ''
+      const resourceParam = searchParams.get('resource')
+      if (kindFromPath && resourceParam) {
+        const slashIdx = resourceParam.indexOf('/')
+        const ns = slashIdx > 0 ? resourceParam.slice(0, slashIdx) : ''
+        const name = slashIdx > 0 ? resourceParam.slice(slashIdx + 1) : resourceParam
+        const apiGroup = searchParams.get('apiGroup') ?? ''
+        const next: SelectedResource = { kind: kindFromPath, namespace: ns, name, group: apiGroup }
+        setSelectedResource(prev => {
+          if (
+            prev &&
+            prev.kind === next.kind &&
+            prev.namespace === next.namespace &&
+            prev.name === next.name &&
+            (prev.group ?? '') === (next.group ?? '')
+          ) return prev
+          return next
+        })
+      } else if (kindFromPath && !resourceParam) {
+        setSelectedResource(prev => (prev === null ? prev : null))
+      }
+    }
+  }, [searchParams, location.pathname, mainView, navigationType])
 
   // Auto-adjust grouping when namespaces change
   useEffect(() => {
@@ -926,7 +1008,7 @@ function AppInner() {
 
   return (
     <PortForwardProvider>
-    <div className="flex flex-col h-screen bg-theme-base min-w-[800px]">
+    <div className="relative flex flex-col h-screen bg-theme-base min-w-[800px]">
       {/* Header */}
       <header className="relative z-50 flex items-center justify-between px-4 py-2 bg-theme-base/90 backdrop-blur-sm border-b border-theme-border/50">
         {/* Left: Logo + Cluster info */}
@@ -1051,18 +1133,15 @@ function AppInner() {
 
         {/* Right: Controls */}
         <div className="flex items-center gap-3 shrink-0">
-          {/* Namespace selector with search. ArgoCD, Data, and custom web apps don't use Radar's namespace scope. */}
+          {/* ArgoCD, Data, and custom web apps don't use Radar's workload namespace scope. */}
           {mainView !== 'argocd' && mainView !== 'data' && mainView !== 'webapp' && (
-            <NamespaceSelector
-              ref={namespaceSelectorRef}
-              value={namespaces}
-              onChange={setNamespaces}
-              namespaces={availableNamespaces}
-              namespacesError={namespacesError}
+            <NamespaceSwitcher
+              ref={namespaceSwitcherRef}
               disabled={mainView === 'helm'}
               disabledTooltip="Helm view always shows all namespaces"
             />
           )}
+
 
           {/* Command palette trigger */}
           <button
@@ -1290,6 +1369,7 @@ function AppInner() {
                         namespaces={availableNamespaces}
                         onSelect={(ns) => {
                           setNamespaces([ns])
+                          setActiveNamespace.mutate({ namespaces: [ns] })
                           // Large clusters need server-side filtering — reconnect SSE with namespace
                           setForceNamespaceFilter([ns])
                         }}
@@ -1326,9 +1406,9 @@ function AppInner() {
                     selectedNodeId={selectedResource ? `${apiResourceToNodeIdPrefix(selectedResource.kind)}-${selectedResource.namespace}-${selectedResource.name}` : undefined}
                     paused={topologyPaused}
                     onTogglePause={handleTogglePause}
-                    onMaximizeNamespace={(ns) => setNamespaces([ns])}
+                    onMaximizeNamespace={(ns) => setActiveNamespace.mutate({ namespaces: [ns] })}
                     namespaceBreadcrumb={namespaces.length === 1 ? namespaces[0] : undefined}
-                    onClearNamespace={namespaces.length === 1 ? () => setNamespaces([]) : undefined}
+                    onClearNamespace={namespaces.length >= 1 ? () => setActiveNamespace.mutate({ namespaces: [] }) : undefined}
                     namespacesKey={namespaces.join(',')}
                   />
 
@@ -1376,7 +1456,10 @@ function AppInner() {
             initialTimeRange={(searchParams.get('time') as '5m' | '30m' | '1h' | '6h' | '24h' | 'all') || undefined}
             requiresNamespaceFilter={topology?.requiresNamespaceFilter && namespaces.length === 0}
             availableNamespaces={availableNamespaces}
-            onNamespaceSelect={(ns) => setNamespaces([ns])}
+            onNamespaceSelect={(ns) => {
+              setNamespaces([ns])
+              setActiveNamespace.mutate({ namespaces: [ns] })
+            }}
           />
         )}
 
@@ -1546,9 +1629,14 @@ function AppInner() {
             { name },
             // Namespace filter from the previous context may not exist in the
             // new one — clear it so resource lists don't silently go empty.
+            // The server clears all per-user picks on context switch already;
+            // local state mirrors that via the namespace-scope effect.
             { onSettled: () => setNamespaces([]) },
           )}
-          onSetNamespaces={setNamespaces}
+          onSetNamespaces={(ns) => {
+            setNamespaces(ns)
+            setActiveNamespace.mutate({ namespaces: ns })
+          }}
           onToggleTheme={toggleTheme}
           onShowDiagnostics={() => setShowDiagnostics(true)}
         />

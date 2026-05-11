@@ -260,7 +260,7 @@ func (s *Server) handleMongoConnect(w http.ResponseWriter, r *http.Request) {
 		authSource = "admin"
 	}
 
-	podName, podPort, err := findPodForService(r.Context(), client, req.Namespace, req.ServiceName, req.Port)
+	podName, podPort, _, err := findPodForService(r.Context(), client, req.Namespace, req.ServiceName, req.Port)
 	if err != nil {
 		s.writeError(w, http.StatusNotFound, fmt.Sprintf("No pod found for Mongo service %s: %v", req.ServiceName, err))
 		return

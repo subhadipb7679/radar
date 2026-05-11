@@ -37,6 +37,7 @@ import { NetworkPolicyRenderer } from '../resources/renderers/NetworkPolicyRende
 import { WorkloadRenderer } from '../resources/renderers/WorkloadRenderer'
 import { CreateResourceDialog } from '../shared/CreateResourceDialog'
 import { cleanYamlForDuplicate } from '../../utils/skeleton-yaml'
+import { useDesktopDownload } from '../../hooks/useDesktopDownload'
 
 type TabType = 'overview' | 'timeline' | 'logs' | 'metrics' | 'yaml'
 
@@ -317,6 +318,7 @@ export function WorkloadView({
   const canUpdateSecrets = useCanUpdateSecrets()
   const updateResource = useUpdateResource()
   const actionsBarProps = useActionsBarProps(kindProp, namespace, name)
+  const desktopDownload = useDesktopDownload()
 
   const handleUpdateResource = useCallback(async (params: { kind: string; namespace: string; name: string; yaml: string }) => {
     await updateResource.mutateAsync(params)
@@ -374,6 +376,7 @@ export function WorkloadView({
         expanded && isPrometheusSupported(kind) && !(kind === 'Pod' && res?.status?.phase === 'Pending')
       }
       onDuplicate={handleDuplicate}
+      onDownload={desktopDownload}
       actionsBarProps={actionsBarProps}
       rendererOverrides={rendererOverrides}
       resolvedEnvFrom={resolvedEnvFrom}

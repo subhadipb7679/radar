@@ -41,6 +41,7 @@ type AppConfig struct {
 	PodShellDefault              string
 	TimelineStorage              string
 	TimelineDBPath               string
+	TimelineRetention            time.Duration
 	PrometheusURL                string
 	PrometheusPortForwardOnStart bool
 	Version                      string
@@ -107,6 +108,7 @@ func BuildTimelineStoreConfig(cfg AppConfig) timeline.StoreConfig {
 			dbPath = filepath.Join(homeDir, ".radar", "timeline.db")
 		}
 		storeCfg.Path = dbPath
+		storeCfg.RetentionAge = cfg.TimelineRetention
 	}
 	return storeCfg
 }
@@ -161,6 +163,7 @@ func CreateServer(cfg AppConfig) *server.Server {
 		NoBrowser:                    cfg.NoBrowser,
 		TimelineStorage:              cfg.TimelineStorage,
 		TimelineDBPath:               cfg.TimelineDBPath,
+		TimelineRetention:            cfg.TimelineRetention.String(),
 		HistoryLimit:                 cfg.HistoryLimit,
 		PrometheusURL:                cfg.PrometheusURL,
 		PrometheusPortForwardOnStart: cfg.PrometheusPortForwardOnStart,

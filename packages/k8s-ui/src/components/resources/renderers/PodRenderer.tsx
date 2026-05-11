@@ -635,7 +635,8 @@ export function PodRenderer({
                       <span>Ports:</span>
                       {container.ports.map((p: any) => (
                         canPortForward && renderPortAction ? (
-                          <span key={`${p.containerPort}-${p.protocol || 'TCP'}`}>
+                          <span key={`${p.name || ''}-${p.containerPort}-${p.protocol || 'TCP'}`} className="inline-flex items-center gap-1">
+                            {p.name && <span className="text-theme-text-tertiary">{p.name}:</span>}
                             {renderPortAction({
                               namespace,
                               podName,
@@ -645,8 +646,8 @@ export function PodRenderer({
                             })}
                           </span>
                         ) : (
-                          <span key={`${p.containerPort}-${p.protocol || 'TCP'}`} className="text-theme-text-tertiary">
-                            {p.containerPort}/{p.protocol || 'TCP'}
+                          <span key={`${p.name || ''}-${p.containerPort}-${p.protocol || 'TCP'}`} className="text-theme-text-tertiary">
+                            {p.name ? `${p.name}: ` : ''}{p.containerPort}/{p.protocol || 'TCP'}
                           </span>
                         )
                       ))}

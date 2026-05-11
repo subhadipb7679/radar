@@ -8,6 +8,7 @@ import {
   useApplyDesktopUpdate,
 } from '../../api/client'
 import type { DesktopUpdateState } from '../../api/client'
+import { WithTooltip } from './Tooltip'
 
 export function UpdateNotification() {
   const queryClient = useQueryClient()
@@ -132,13 +133,27 @@ export function UpdateNotification() {
               )}
 
               {!isDesktop && versionInfo.updateCommand ? (
-                <button
-                  onClick={handleCopyCommand}
-                  className="flex items-center gap-2 mt-2 px-2 py-1.5 bg-theme-elevated rounded text-xs font-mono text-theme-text-primary hover:bg-theme-hover transition-colors w-full"
-                >
-                  <code className="flex-1 text-left truncate">{versionInfo.updateCommand}</code>
-                  <CopyIcon copied={copied} failed={copyFailed} />
-                </button>
+                <>
+                  <WithTooltip tip={versionInfo.updateCommand} delay={100}>
+                    <button
+                      onClick={handleCopyCommand}
+                      className="flex items-center gap-2 mt-2 px-2 py-1.5 bg-theme-elevated rounded text-xs font-mono text-theme-text-primary hover:bg-theme-hover transition-colors w-full"
+                    >
+                      <code className="flex-1 text-left truncate">{versionInfo.updateCommand}</code>
+                      <CopyIcon copied={copied} failed={copyFailed} />
+                    </button>
+                  </WithTooltip>
+                  {versionInfo.installMethod === 'direct' && versionInfo.releaseUrl && (
+                    <a
+                      href={versionInfo.releaseUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 mt-1.5 text-xs text-theme-text-tertiary hover:text-theme-text-secondary hover:underline"
+                    >
+                      or download from GitHub →
+                    </a>
+                  )}
+                </>
               ) : (
                 !isDesktop && versionInfo.releaseUrl && (
                   <a
